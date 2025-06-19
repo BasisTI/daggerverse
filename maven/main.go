@@ -1,3 +1,4 @@
+// Dagger module to build maven Projects
 package main
 
 import (
@@ -6,18 +7,47 @@ import (
 	"fmt"
 )
 
-// Runs mvn verify to build the application
-func MvnVerify(
-// Directory with the maven module
+var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
+
+type Maven struct {
+	Image               string
+	UseMvnw             bool
+	UseCache            bool
+	UseDefaultCiOptions bool
+	Dir                 *dagger.Directory
+	MavenContainer      *dagger.Container
+}
+
+func New(
+// +optional
 	source *dagger.Directory,
-// Run clean goal before verify
+// +default="maven:3.9.9-eclipse-temurin-21-alpine"
+	image string,
+// +default=false
+	useMvnw bool,
+// +default=true
+	useCache bool,
+// +default=true
+	useDefaultCiOptions bool) *Maven {
+	return &Maven{
+		Image:               image,
+		UseMvnw:             useMvnw,
+		UseCache:            useCache,
+		UseDefaultCiOptions: useDefaultCiOptions,
+		Dir:                 source,
+	}
+}
+
+// Runs mvn verify to build the application
+func (m *Maven) MvnVerify(
+// Run clean goal before verify goal
 	cleanFirst bool) *Maven {
-	args := []string{}
+	var args []string
 	if cleanFirst {
 		args = append(args, "clean")
 	}
 	args = append(args, "verify")
-	return NewMaven(source).MavenBuild(args)
+	return m.MavenBuild(args)
 }
 
 func (m *Maven) PublishWithJib(ctx context.Context,
@@ -36,7 +66,7 @@ func (m *Maven) PublishWithJib(ctx context.Context,
 }
 
 // Runs mvn clean verify to build the application then publish the imagem with Jib
-func MvnVerifyPublishWithJib(ctx context.Context,
+func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
 // Directory with the maven module
 	source *dagger.Directory,
 // Registry address to publish the image
@@ -47,5 +77,5 @@ func MvnVerifyPublishWithJib(ctx context.Context,
 	username string,
 // Password for login to the registry
 	password *dagger.Secret) (*Maven, error) {
-	return MvnVerify(source, true).PublishWithJib(ctx, registry, image, username, password)
+	return m.MvnVerify(source, true).PublishWithJib(ctx, registry, image, username, password)
 }

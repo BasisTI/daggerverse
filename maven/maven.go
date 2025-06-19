@@ -7,36 +7,14 @@ import (
 	"fmt"
 )
 
-const DefaultMavenImage = "maven:3.9.9-eclipse-temurin-21-alpine"
 const DefaultMavenCacheName = "maven-cache"
 const DefaultWorkdir = "/app"
-
-var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
-
-type Maven struct {
-	Image               string
-	UseMvnw             bool
-	UseCache            bool
-	UseDefaultCiOptions bool
-	Dir                 *dagger.Directory
-	MavenContainer      *dagger.Container
-}
 
 type pomProject struct {
 	// XMLName is used to ensure we're parsing the <project> element.
 	XMLName xml.Name `xml:"project"`
 	// Version captures the content of the <version> tag.
 	Version string `xml:"version"`
-}
-
-func NewMaven(source *dagger.Directory) *Maven {
-	return &Maven{
-		Image:               DefaultMavenImage,
-		UseMvnw:             false,
-		UseCache:            true,
-		UseDefaultCiOptions: true,
-		Dir:                 source,
-	}
 }
 
 func (mc *Maven) WithImage(image string) *Maven {
