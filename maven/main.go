@@ -50,6 +50,7 @@ func (m *Maven) MvnVerify(
 	return m.MavenBuild(args)
 }
 
+// Runs JIB through mvn jib:build to build and publish a Docker Image
 func (m *Maven) PublishWithJib(ctx context.Context,
 	registry string,
 	image string,
@@ -68,8 +69,6 @@ func (m *Maven) PublishWithJib(ctx context.Context,
 // Runs mvn clean verify to build the application then publish the imagem with Jib
 func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
 // Directory with the maven module
-	source *dagger.Directory,
-// Registry address to publish the image
 	registry string,
 // Image name with tag (can contain groups, i.e.: a/b/c:1.0)
 	image string,
