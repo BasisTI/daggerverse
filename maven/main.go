@@ -77,5 +77,5 @@ func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
 	username string,
 // Password for login to the registry
 	password *dagger.Secret) (*Maven, error) {
-	return m.MvnVerify(source, true).PublishWithJib(ctx, registry, image, username, password)
+	return m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
 }
