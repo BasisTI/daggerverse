@@ -1,15 +1,11 @@
+// Dagger module to build maven Projects
 package main
 
 import (
 	"context"
 	"dagger/maven/internal/dagger"
-	"encoding/xml"
 	"fmt"
 )
-
-const DefaultMavenImage = "maven:3.9.9-eclipse-temurin-21-alpine"
-const DefaultMavenCacheName = "maven-cache"
-const DefaultWorkdir = "/app"
 
 var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
 
@@ -22,99 +18,73 @@ type Maven struct {
 	MavenContainer      *dagger.Container
 }
 
-type pomProject struct {
-	// XMLName is used to ensure we're parsing the <project> element.
-	XMLName xml.Name `xml:"project"`
-	// Version captures the content of the <version> tag.
-	Version string `xml:"version"`
-}
-
-func NewMaven(source *dagger.Directory) *Maven {
+func New(
+// +optional
+	source *dagger.Directory,
+// +default="maven:3.9.9-eclipse-temurin-21-alpine"
+	image string,
+// +default=false
+	useMvnw bool,
+// +default=true
+	useCache bool,
+// +default=true
+	useDefaultCiOptions bool) *Maven {
 	return &Maven{
-		Image:               DefaultMavenImage,
-		UseMvnw:             false,
-		UseCache:            true,
-		UseDefaultCiOptions: true,
+		Image:               image,
+		UseMvnw:             useMvnw,
+		UseCache:            useCache,
+		UseDefaultCiOptions: useDefaultCiOptions,
 		Dir:                 source,
 	}
 }
 
-func (mc *Maven) WithImage(image string) *Maven {
-	mc.Image = image
-	return mc
-}
-
-func (mc *Maven) WithUseMvnw(mvnw bool) *Maven {
-	mc.UseMvnw = mvnw
-	return mc
-}
-
-func (mc *Maven) WithUseCache(useCache bool) *Maven {
-	mc.UseCache = useCache
-	return mc
-}
-
-func (mc *Maven) WithUseDefaultCiOptions(useDefaultCiOptions bool) *Maven {
-	mc.UseDefaultCiOptions = useDefaultCiOptions
-	return mc
-}
-
-func (mc *Maven) WithDir(dir *dagger.Directory) *Maven {
-	mc.Dir = dir
-	return mc
-}
-
-func (mc *Maven) NewContainer() *dagger.Container {
-	container := dag.Container().From(mc.Image).WithWorkdir(DefaultWorkdir)
-	if mc.UseCache {
-		container = container.WithMountedCache("/root/.m2", dag.CacheVolume(DefaultMavenCacheName))
+// Runs mvn verify to build the application
+func (m *Maven) MvnVerify(
+// Run clean goal before verify goal
+	cleanFirst bool) *Maven {
+	var args []string
+	if cleanFirst {
+		args = append(args, "clean")
 	}
-	if mc.Dir != nil {
-		container = container.WithDirectory(DefaultWorkdir, mc.Dir)
-	}
-	return container
+	args = append(args, "verify")
+	return m.MavenBuild(args)
 }
 
-func (mc *Maven) Container() *dagger.Container {
-	if mc.MavenContainer == nil {
-		mc.MavenContainer = mc.NewContainer()
-	}
-	return mc.MavenContainer
-}
-
-func (mc *Maven) MavenBuild(args []string) *Maven {
-	container := mc.Container()
-	var execCmd []string
-	if mc.UseMvnw {
-		execCmd = append(execCmd, "./mvnw")
-	} else {
-		execCmd = append(execCmd, "mvn")
-	}
-	if mc.UseDefaultCiOptions {
-		execCmd = append(execCmd, DefaultMvnCiOptions...)
-	}
-	mc.MavenContainer = container.WithExec(append(execCmd, args...))
-	return mc
-}
-
-func (mc *Maven) GetGeneratedArtifact(jarName string) *dagger.File {
-	return mc.Container().File(fmt.Sprintf("%s/target/%s", DefaultWorkdir, jarName))
-}
-
-func (m *Maven) GetVersion(ctx context.Context) (string, error) {
-	if m.Dir == nil {
-		return "", fmt.Errorf("cannot get version: maven directory is not set")
-	}
-	pomXML, err := m.Dir.File("pom.xml").Contents(ctx)
+// Runs JIB through mvn jib:build to build and publish a Docker Image
+func (m *Maven) PublishWithJib(ctx context.Context,
+	registry string,
+	image string,
+	username string,
+	password *dagger.Secret) (*Maven, error) {
+	plaintextPwd, err := password.Plaintext(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to read pom.xml from directory: %w", err)
+		return nil, err
 	}
-	var project pomProject
-	if err := xml.Unmarshal([]byte(pomXML), &project); err != nil {
-		return "", fmt.Errorf("failed to parse pom.xml: %w", err)
+	return m.MavenBuild([]string{"jib:build",
+		fmt.Sprintf("-Djib.to.image=%s/%s", registry, image),
+		fmt.Sprintf("-Djib.to.auth.username=%s", username),
+		fmt.Sprintf("-Djib.to.auth.password=%s", plaintextPwd)}), nil
+}
+
+// Runs mvn clean verify to build the application then publish the imagem with Jib
+func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
+// Directory with the maven module
+	registry string,
+// Image name with tag (can contain groups, i.e.: a/b/c:1.0)
+	image string,
+// Username for login to the registry
+	username string,
+// Password for login to the registry
+	password *dagger.Secret) (*Maven, error) {
+	return m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
+}
+
+func (m *Maven) MvnSonarAnalysis(ctx context.Context, sonarHostUrl string, token *dagger.Secret) (*Maven, error) {
+	plaintextToken, err := token.Plaintext(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if project.Version == "" {
-		return "", fmt.Errorf("could not find a <version> tag inside the <project> tag in pom.xml")
-	}
-	return project.Version, nil
+	return m.MavenBuild([]string{"org.sonarsource.scanner.maven:sonar-maven-plugin:sonar",
+		fmt.Sprintf("-Dsonar.token=%s", plaintextToken),
+		fmt.Sprintf("-Dsonar.host.url=%s", sonarHostUrl)}), nil
 }
