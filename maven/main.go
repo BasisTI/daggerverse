@@ -78,3 +78,13 @@ func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
 	password *dagger.Secret) (*Maven, error) {
 	return m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
 }
+
+func (m *Maven) MvnSonarAnalysis(ctx context.Context, sonarHostUrl string, token *dagger.Secret) (*Maven, error) {
+	plaintextToken, err := token.Plaintext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return m.MavenBuild([]string{"org.sonarsource.scanner.maven:sonar-maven-plugin:sonar",
+		fmt.Sprintf("-Dsonar.token=%s", plaintextToken),
+		fmt.Sprintf("-Dsonar.host.url=%s", sonarHostUrl)}), nil
+}
