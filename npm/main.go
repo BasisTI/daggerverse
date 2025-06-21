@@ -75,7 +75,7 @@ func (nc *Npm) GetAngularDistDir() *dagger.Directory {
 	return nc.Container().Directory(fmt.Sprintf("%s/dist/browser", DefaultWorkdir))
 }
 
-func (n *Npm) GetVersion(ctx context.Context) (string, error) {.
+func (n *Npm) GetVersion(ctx context.Context) (string, error) {
 	if n.Dir == nil {
 		return "", fmt.Errorf("cannot get NPM version: npm directory is not set")
 	}

@@ -19,15 +19,15 @@ type Maven struct {
 }
 
 func New(
-// +optional
+	// +optional
 	source *dagger.Directory,
-// +default="maven:3.9.9-eclipse-temurin-21-alpine"
+	// +default="maven:3.9.9-eclipse-temurin-21-alpine"
 	image string,
-// +default=false
+	// +default=false
 	useMvnw bool,
-// +default=true
+	// +default=true
 	useCache bool,
-// +default=true
+	// +default=true
 	useDefaultCiOptions bool) *Maven {
 	return &Maven{
 		Image:               image,
@@ -40,7 +40,7 @@ func New(
 
 // Runs mvn verify to build the application
 func (m *Maven) MvnVerify(
-// Run clean goal before verify goal
+	// Run clean goal before verify goal
 	cleanFirst bool) *Maven {
 	var args []string
 	if cleanFirst {
@@ -68,13 +68,13 @@ func (m *Maven) PublishWithJib(ctx context.Context,
 
 // Runs mvn clean verify to build the application then publish the imagem with Jib
 func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
-// Directory with the maven module
+	// Directory with the maven module
 	registry string,
-// Image name with tag (can contain groups, i.e.: a/b/c:1.0)
+	// Image name with tag (can contain groups, i.e.: a/b/c:1.0)
 	image string,
-// Username for login to the registry
+	// Username for login to the registry
 	username string,
-// Password for login to the registry
+	// Password for login to the registry
 	password *dagger.Secret) (*Maven, error) {
 	return m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
 }
