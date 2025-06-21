@@ -7,7 +7,6 @@ import (
 	"fmt"
 )
 
-const DefaultNodeImage = "node:22.16.0-alpine3.22"
 const DefaultNpmCacheName = "npm-cache"
 const DefaultWorkdir = "/app"
 
@@ -24,10 +23,18 @@ type packageJSON struct {
 	Version string `json:"version"`
 }
 
-func NewNpm(source *dagger.Directory) *Npm {
+func New(
+// Diretório com o código-fonte node/npm
+	source *dagger.Directory,
+// Image name for building application
+// +default="node:22.16.0-alpine3.22"
+	buildImage string,
+// Use Npm Cache
+// +default=true
+	useCache bool) *Npm {
 	return &Npm{
-		Image:    DefaultNodeImage,
-		UseCache: true,
+		Image:    buildImage,
+		UseCache: useCache,
 		Dir:      source,
 	}
 }
