@@ -48,7 +48,7 @@ func (mc *Maven) NewContainer() *dagger.Container {
 		container = container.WithMountedCache("/root/.m2", dag.CacheVolume(DefaultMavenCacheName))
 	}
 	if mc.Dir != nil {
-		container = container.WithDirectory(DefaultWorkdir, mc.Dir)
+		container = container.WithMountedDirectory(DefaultWorkdir, mc.Dir)
 	}
 	return container
 }
