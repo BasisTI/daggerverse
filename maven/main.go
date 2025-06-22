@@ -50,15 +50,13 @@ func New(
 }
 
 // MvnVerify runs mvn verify goal to build the application and run UT and IT
-func (m *Maven) MvnVerify(
-// Run clean goal before verify goal
-	cleanFirst bool) *Maven {
+func (m *Maven) MvnVerify(cleanFirst bool) *dagger.Directory {
 	var args []string
 	if cleanFirst {
 		args = append(args, "clean")
 	}
 	args = append(args, "verify")
-	return m.MavenBuild(args)
+	return m.MavenBuild(args).GetBuildDir()
 }
 
 // PublishWithJib runs JIB through mvn jib:build to build and publish a Docker Image
@@ -88,7 +86,11 @@ func (m *Maven) MvnVerifyPublishWithJib(
 	username string,
 // Password for login to the registry
 	password *dagger.Secret) (*dagger.Directory, error) {
-	_, err := m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
+	_, err := m.MvnVerify(true).Entries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	_, err = m.PublishWithJib(ctx, registry, image, username, password)
 	if err != nil {
 		return nil, err
 	}
