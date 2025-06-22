@@ -24,13 +24,13 @@ type packageJSON struct {
 }
 
 func New(
-// Diretório com o código-fonte node/npm
+	// Directory with node/npm source code
 	source *dagger.Directory,
-// Image name for building application
-// +default="node:22.16.0-alpine3.22"
+	// Image name for building application
+	// +default="node:22.16.0-alpine3.22"
 	buildImage string,
-// Use Npm Cache
-// +default=true
+	// Use Npm Cache
+	// +default=true
 	useCache bool) *Npm {
 	return &Npm{
 		Image:    buildImage,

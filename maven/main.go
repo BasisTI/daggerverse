@@ -75,8 +75,12 @@ func (m *Maven) MvnVerifyPublishWithJib(ctx context.Context,
 // Username for login to the registry
 	username string,
 // Password for login to the registry
-	password *dagger.Secret) (*Maven, error) {
-	return m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
+	password *dagger.Secret) (string, error) {
+	_, err := m.MvnVerify(true).PublishWithJib(ctx, registry, image, username, password)
+	if err != nil {
+		return "", err
+	}
+	return image, nil
 }
 
 func (m *Maven) MvnSonarAnalysis(ctx context.Context, sonarHostUrl string, token *dagger.Secret) (*Maven, error) {
