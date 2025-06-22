@@ -75,10 +75,17 @@ func (mc *Maven) MavenBuild(args []string) *Maven {
 	return mc
 }
 
+// GetGeneratedArtifact returns an artifact from the target directory
 func (mc *Maven) GetGeneratedArtifact(jarName string) *dagger.File {
 	return mc.Container().File(fmt.Sprintf("%s/target/%s", DefaultWorkdir, jarName))
 }
 
+// GetBuildDir returns the output build Directory
+func (mc *Maven) GetBuildDir() *dagger.Directory {
+	return mc.Container().Directory(DefaultWorkdir)
+}
+
+// GetVersion returns the project version from pom.xml
 func (m *Maven) GetVersion(ctx context.Context) (string, error) {
 	if m.Dir == nil {
 		return "", fmt.Errorf("cannot get version: maven directory is not set")
