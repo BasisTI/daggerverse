@@ -7,7 +7,6 @@ import (
 	"fmt"
 )
 
-const DefaultNodeImage = "node:22.16.0-alpine3.22"
 const DefaultNpmCacheName = "npm-cache"
 const DefaultWorkdir = "/app"
 
@@ -24,10 +23,18 @@ type packageJSON struct {
 	Version string `json:"version"`
 }
 
-func NewNpm(source *dagger.Directory) *Npm {
+func New(
+	// Directory with node/npm source code
+	source *dagger.Directory,
+	// Image name for building application
+	// +default="node:22.16.0-alpine3.22"
+	buildImage string,
+	// Use Npm Cache
+	// +default=true
+	useCache bool) *Npm {
 	return &Npm{
-		Image:    DefaultNodeImage,
-		UseCache: true,
+		Image:    buildImage,
+		UseCache: useCache,
 		Dir:      source,
 	}
 }
@@ -75,7 +82,7 @@ func (nc *Npm) GetAngularDistDir() *dagger.Directory {
 	return nc.Container().Directory(fmt.Sprintf("%s/dist/browser", DefaultWorkdir))
 }
 
-func (n *Npm) GetVersion(ctx context.Context) (string, error) {.
+func (n *Npm) GetVersion(ctx context.Context) (string, error) {
 	if n.Dir == nil {
 		return "", fmt.Errorf("cannot get NPM version: npm directory is not set")
 	}
