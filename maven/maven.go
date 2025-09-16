@@ -8,7 +8,7 @@ import (
 )
 
 const DefaultMavenCacheName = "maven-cache"
-const DefaultWorkdir = "/app"
+const BaseWorkdir = "/app"
 
 type pomProject struct {
 	// XMLName is used to ensure we're parsing the <project> element.
@@ -17,89 +17,121 @@ type pomProject struct {
 	Version string `xml:"version"`
 }
 
-func (mc *Maven) WithImage(image string) *Maven {
-	mc.Image = image
-	return mc
+func (m *Maven) WithImage(image string) *Maven {
+	m.Image = image
+	return m
 }
 
-func (mc *Maven) WithUseMvnw(mvnw bool) *Maven {
-	mc.UseMvnw = mvnw
-	return mc
+func (m *Maven) WithUseMvnw(mvnw bool) *Maven {
+	m.UseMvnw = mvnw
+	return m
 }
 
-func (mc *Maven) WithUseCache(useCache bool) *Maven {
-	mc.UseCache = useCache
-	return mc
+func (m *Maven) WithUseCache(useCache bool) *Maven {
+	m.UseCache = useCache
+	return m
 }
 
-func (mc *Maven) WithUseDefaultCiOptions(useDefaultCiOptions bool) *Maven {
-	mc.UseDefaultCiOptions = useDefaultCiOptions
-	return mc
+func (m *Maven) WithUseDefaultCiOptions(useDefaultCiOptions bool) *Maven {
+	m.UseDefaultCiOptions = useDefaultCiOptions
+	return m
 }
 
-func (mc *Maven) WithDir(dir *dagger.Directory) *Maven {
-	mc.Dir = dir
-	return mc
+func (m *Maven) WithParentPom(parentPom *dagger.File) *Maven {
+	m.ParentPom = parentPom
+	return m
 }
 
-func (mc *Maven) NewContainer() *dagger.Container {
-	container := dag.Container().From(mc.Image).WithWorkdir(DefaultWorkdir)
-	if mc.UseCache {
+// Initialize base maven container. If there is a parent, add the pom in the base
+// Working Directory
+func (m *Maven) NewBaseContainer() *dagger.Container {
+	container := dag.Container().From(m.Image).WithWorkdir(BaseWorkdir)
+	if m.UseCache {
 		container = container.WithMountedCache("/root/.m2", dag.CacheVolume(DefaultMavenCacheName))
 	}
-	if mc.Dir != nil {
-		container = container.WithMountedDirectory(DefaultWorkdir, mc.Dir)
+	if m.ParentPom != nil {
+		container = container.
+			WithFile(fmt.Sprintf("%s/%s", BaseWorkdir, "pom.xml"), m.ParentPom).
+			WithWorkdir(BaseWorkdir).
+			WithExec(m.getFullMvnModuleCommand([]string{"-N"}, []string{"install"}))
 	}
 	return container
 }
 
-func (mc *Maven) Container() *dagger.Container {
-	if mc.MavenContainer == nil {
-		mc.MavenContainer = mc.NewContainer()
+func (m *Maven) Container() *dagger.Container {
+	if m.BaseContainer == nil {
+		m.BaseContainer = m.NewBaseContainer()
 	}
-	return mc.MavenContainer
+	return m.BaseContainer
 }
 
-func (mc *Maven) MavenBuild(args []string) *Maven {
-	container := mc.Container()
+func (m *Maven) MavenBuild(goals []string) *Maven {
+	m.BaseContainer = m.Container().WithExec(m.getFullMvnCommand(goals))
+	return m
+}
+
+func (m *Maven) getFullMvnCommand(goals []string) []string {
+	return m.getFullMvnModuleCommand(nil, goals)
+}
+
+func (m *Maven) getFullMvnModuleCommand(moduleOptions []string, goals []string) []string {
 	var execCmd []string
-	if mc.UseMvnw {
+	if m.UseMvnw {
 		execCmd = append(execCmd, "./mvnw")
 	} else {
 		execCmd = append(execCmd, "mvn")
 	}
-	if mc.UseDefaultCiOptions {
+	if m.UseDefaultCiOptions {
 		execCmd = append(execCmd, DefaultMvnCiOptions...)
 	}
-	mc.MavenContainer = container.WithExec(append(execCmd, args...))
-	return mc
+	if m.ExtraOptions != nil {
+		execCmd = append(execCmd, m.ExtraOptions...)
+	}
+	if moduleOptions != nil {
+		execCmd = append(execCmd, moduleOptions...)
+	}
+	return append(execCmd, goals...)
 }
 
 // GetGeneratedArtifact returns an artifact from the target directory
-func (mc *Maven) GetGeneratedArtifact(jarName string) *dagger.File {
-	return mc.Container().File(fmt.Sprintf("%s/target/%s", DefaultWorkdir, jarName))
+func (m *Maven) GetGeneratedArtifact(jarName string) *dagger.File {
+	return m.Container().File(fmt.Sprintf("%s/target/%s", BaseWorkdir, jarName))
 }
 
 // GetBuildDir returns the output build Directory
-func (mc *Maven) GetBuildDir() *dagger.Directory {
-	return mc.Container().Directory(DefaultWorkdir)
+func (m *Maven) GetBuildDir() *dagger.Directory {
+	return m.Container().Directory(BaseWorkdir)
 }
 
-// GetVersion returns the project version from pom.xml
-func (m *Maven) GetVersion(ctx context.Context) (string, error) {
-	if m.Dir == nil {
+// GetVersion returns the project version from pom.xml in the moduleDir
+// If not set and there is a Parent, take from there
+func (m *Maven) GetVersion(ctx context.Context, moduleDir *dagger.Directory) (string, error) {
+	if moduleDir == nil {
 		return "", fmt.Errorf("cannot get version: maven directory is not set")
 	}
-	pomXML, err := m.Dir.File("pom.xml").Contents(ctx)
+	project, err := m.readProject(ctx, moduleDir.File("pom.xml"))
 	if err != nil {
-		return "", fmt.Errorf("failed to read pom.xml from directory: %w", err)
+		return "", err
+	}
+	if project.Version == "" {
+		if m.ParentPom != nil {
+			project, err = m.readProject(ctx, m.ParentPom)
+		}
+		if err != nil || project.Version == "" {
+			return "", fmt.Errorf("could not find a <version> tag inside the <project> tag in pom.xml or Parent")
+		}
+	}
+	return project.Version, nil
+}
+
+func (m *Maven) readProject(ctx context.Context, pomFile *dagger.File) (*pomProject, error) {
+	pomXML, err := pomFile.Contents(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read pom.xml from directory: %w", err)
 	}
 	var project pomProject
 	if err := xml.Unmarshal([]byte(pomXML), &project); err != nil {
-		return "", fmt.Errorf("failed to parse pom.xml: %w", err)
+		return nil, fmt.Errorf("failed to parse pom.xml: %w", err)
 	}
-	if project.Version == "" {
-		return "", fmt.Errorf("could not find a <version> tag inside the <project> tag in pom.xml")
-	}
-	return project.Version, nil
+	return &project, nil
 }
