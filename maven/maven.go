@@ -1,3 +1,4 @@
+// Dagger module to build maven Projects
 package main
 
 import (
@@ -17,33 +18,58 @@ type pomProject struct {
 	Version string `xml:"version"`
 }
 
-func (m *Maven) WithImage(image string) *Maven {
-	m.Image = image
-	return m
+// Maven Module
+type Maven struct {
+	// image for executing Builds
+	Image string
+	// Use Maven Wrapper
+	UseMvnw bool
+	// Use Cache for Maven repository
+	UseCache bool
+	// Use default maven parameters for CI builds
+	UseDefaultCiOptions bool
+	// Extra maven options, for example properties: "-Dmyprop=1"
+	ExtraOptions []string
+	// Optional Parent POM for multi-modules buils
+	ParentPom *dagger.File
+	// Container used to run the builds
+	BaseContainer *dagger.Container
 }
 
-func (m *Maven) WithUseMvnw(mvnw bool) *Maven {
-	m.UseMvnw = mvnw
-	return m
+var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
+
+// New creates a new Maven Module
+func New(
+	// image for executing Builds
+	// +default="maven:3.9.9-eclipse-temurin-21-alpine"
+	buildImage string,
+	// Use Maven Wrapper
+	// +default=false
+	useMvnw bool,
+	// Use Cache for Maven repository (true recommended)
+	// +default=true
+	useCache bool,
+	// Use default maven parameters for CI builds
+	// +default=true
+	useDefaultCiOptions bool,
+	// Extra maven options, for example properties: "-Dmyprop=1"
+	// +optional
+	extraOptions []string,
+	// Parent Pom if multi-module project
+	// +optional
+	parentPom *dagger.File) *Maven {
+	return &Maven{
+		Image:               buildImage,
+		UseMvnw:             useMvnw,
+		UseCache:            useCache,
+		UseDefaultCiOptions: useDefaultCiOptions,
+		ExtraOptions:        extraOptions,
+		ParentPom:           parentPom,
+	}
 }
 
-func (m *Maven) WithUseCache(useCache bool) *Maven {
-	m.UseCache = useCache
-	return m
-}
-
-func (m *Maven) WithUseDefaultCiOptions(useDefaultCiOptions bool) *Maven {
-	m.UseDefaultCiOptions = useDefaultCiOptions
-	return m
-}
-
-func (m *Maven) WithParentPom(parentPom *dagger.File) *Maven {
-	m.ParentPom = parentPom
-	return m
-}
-
-// Initialize base maven container. If there is a parent, add the pom in the base
-// Working Directory
+// NewBaseContainer Initialize base maven container.
+// If there is a parent, add the pom in the base Working Directory
 func (m *Maven) NewBaseContainer() *dagger.Container {
 	container := dag.Container().From(m.Image).WithWorkdir(BaseWorkdir)
 	if m.UseCache {
@@ -54,6 +80,7 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 			WithFile(fmt.Sprintf("%s/%s", BaseWorkdir, "pom.xml"), m.ParentPom).
 			WithWorkdir(BaseWorkdir).
 			WithExec(m.getFullMvnModuleCommand([]string{"-N"}, []string{"install"}))
+		//WithExec([]string{"rm", "pom.xml"})
 	}
 	return container
 }
@@ -91,16 +118,6 @@ func (m *Maven) getFullMvnModuleCommand(moduleOptions []string, goals []string) 
 		execCmd = append(execCmd, moduleOptions...)
 	}
 	return append(execCmd, goals...)
-}
-
-// GetGeneratedArtifact returns an artifact from the target directory
-func (m *Maven) GetGeneratedArtifact(jarName string) *dagger.File {
-	return m.Container().File(fmt.Sprintf("%s/target/%s", BaseWorkdir, jarName))
-}
-
-// GetBuildDir returns the output build Directory
-func (m *Maven) GetBuildDir() *dagger.Directory {
-	return m.Container().Directory(BaseWorkdir)
 }
 
 // GetVersion returns the project version from pom.xml in the moduleDir
