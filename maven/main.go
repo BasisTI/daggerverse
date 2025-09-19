@@ -28,6 +28,14 @@ func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module 
 	moduleSonarConfig.ProjectKey = module
 	moduleJibConfig.Image = module
 	moduleJibConfig.Tag = m.GetVersionOrDefault(ctx, source, "lastest")
+	sonarOptions, err := m.buildSonarOptions(ctx, &moduleSonarConfig)
+	if err != nil {
+		return nil, err
+	}
+	jibOptions, err := m.buildJibOptions(ctx, &moduleJibConfig)
+	if err != nil {
+		return nil, err
+	}
 	stages := []PipelineStage{
 		{
 			DisplayName: "Build and Test",
@@ -36,12 +44,12 @@ func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module 
 		{
 			DisplayName: "SonarQube Analysis",
 			Goals:       []string{"sonar:sonar"},
-			Options:     m.buildSonarOptions(&moduleSonarConfig),
+			Options:     sonarOptions,
 		},
 		{
 			DisplayName: "Docker Build and Push with Jib",
 			Goals:       []string{"jib:build"},
-			Options:     m.buildJibOptions(&moduleJibConfig),
+			Options:     jibOptions,
 		},
 	}
 	buildResult, err := m.executeStages(ctx, source.Directory(module), module, stages)
@@ -104,9 +112,9 @@ func (m *Maven) executeStage(
 	}, nil
 }
 
-func (m *Maven) buildJibOptions(config *JibConfig) []string {
+func (m *Maven) buildJibOptions(ctx context.Context, config *JibConfig) ([]string, error) {
 	if config == nil {
-		return nil
+		return nil, nil
 	}
 
 	var options []string
@@ -121,15 +129,19 @@ func (m *Maven) buildJibOptions(config *JibConfig) []string {
 		options = append(options, fmt.Sprintf("-Djib.to.auth.username=%s", config.Username))
 	}
 
-	if config.Password != "" {
-		options = append(options, fmt.Sprintf("-Djib.to.auth.password=%s", config.Password))
+	if config.PasswordSecret != nil {
+		password, err := config.PasswordSecret.Plaintext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get jib password: %w", err)
+		}
+		options = append(options, fmt.Sprintf("-Djib.to.auth.password=%s", password))
 	}
 
 	if config.Options != nil {
 		options = append(options, config.Options...)
 	}
 
-	return options
+	return options, nil
 }
 
 func (j *JibConfig) getImageUrl() string {

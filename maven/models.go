@@ -37,21 +37,21 @@ type JibConfig struct {
 	Group    string // External (env_vars)
 	Image    string // From Pipeline Stage
 	Tag      string
-	Username string   // External (env_vars)
-	Password string   // External (env_vars)
-	Options  []string // From Pipeline Stage
+	Username string // External (env_vars)
+	// PasswordSecret keeps the credential encrypted until it needs to be read.
+	PasswordSecret *dagger.Secret
+	Options        []string // From Pipeline Stage
 }
 
 func (m *Maven) NewJibConfig(
-	// +
 	registry string,
 	group string,
 	username string,
-	password string) JibConfig {
+	passwordSecret *dagger.Secret) JibConfig {
 	return JibConfig{
-		Registry: registry,
-		Group:    group,
-		Username: username,
-		Password: password,
+		Registry:       registry,
+		Group:          group,
+		Username:       username,
+		PasswordSecret: passwordSecret,
 	}
 }
