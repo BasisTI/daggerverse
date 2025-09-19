@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// FullBuildModules Builds all stages: compile+test, sonar, docker push for a list of modules
+// FullBuildModules orchestrates build, test, Sonar analysis, and image publishing for each module in order.
 func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, modules []string, sonarConfig *SonarConfig, jibConfig *JibConfig) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
@@ -20,7 +20,7 @@ func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, 
 	return results, nil
 }
 
-// FullBuild Builds all stages: compile+test, sonar, docker push for a given maven module
+// FullBuild executes the three-stage pipeline (build/test, Sonar, Jib) for a single Maven module.
 func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module string, sonarConfig *SonarConfig, jibConfig *JibConfig) (*ModuleBuildResult, error) {
 
 	moduleSonarConfig := *sonarConfig
@@ -60,7 +60,7 @@ func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module 
 	return buildResult, nil
 }
 
-// executeStages Execute pipeline stages stage by stage
+// executeStages runs the provided pipeline stages sequentially using a shared container.
 func (m *Maven) executeStages(
 	ctx context.Context,
 	source *dagger.Directory,
@@ -82,6 +82,7 @@ func (m *Maven) executeStages(
 	return result, nil
 }
 
+// executeStage mounts the module source, runs the Maven goals for a stage, and captures outputs.
 func (m *Maven) executeStage(
 	ctx context.Context,
 	source *dagger.Directory,
@@ -112,6 +113,7 @@ func (m *Maven) executeStage(
 	}, nil
 }
 
+// buildJibOptions materializes the Maven command-line arguments needed to run the Jib plugin.
 func (m *Maven) buildJibOptions(ctx context.Context, config *JibConfig) ([]string, error) {
 	if config == nil {
 		return nil, nil
@@ -144,6 +146,7 @@ func (m *Maven) buildJibOptions(ctx context.Context, config *JibConfig) ([]strin
 	return options, nil
 }
 
+// getImageUrl resolves the fully-qualified image reference, applying the default tag when needed.
 func (j *JibConfig) getImageUrl() string {
 	imageUrl := ""
 	if j.Image != "" {

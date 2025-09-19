@@ -7,7 +7,7 @@ import (
 	"dagger/maven/internal/dagger"
 )
 
-// Sonar Inspections Configuration
+// SonarConfig stores the data required to invoke SonarQube analysis for a module.
 type SonarConfig struct {
 	// Host Sonarqube instance address
 	Host string
@@ -23,6 +23,7 @@ type SonarConfig struct {
 	ExtraOptions []string
 }
 
+// NewSonarConfig validates input and returns a SonarConfig bound to the provided token secret.
 func (m *Maven) NewSonarConfig(
 	host string,
 	tokenSecret *dagger.Secret,
@@ -42,7 +43,7 @@ func (m *Maven) NewSonarConfig(
 	return &retorno, nil
 }
 
-// Helper to build options with maven sonar properties
+// buildSonarOptions renders the Maven command-line options required to execute Sonar analysis.
 func (m *Maven) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]string, error) {
 	if config == nil {
 		return nil, nil

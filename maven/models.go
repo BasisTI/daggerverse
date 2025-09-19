@@ -6,7 +6,7 @@ import (
 
 // Global Configuration types
 
-// ModuleBuildResult represents the output of a Maven build
+// ModuleBuildResult represents the aggregated outcome of a Maven module build.
 type ModuleBuildResult struct {
 	Artifacts      *dagger.Directory
 	Container      *dagger.Container
@@ -16,7 +16,7 @@ type ModuleBuildResult struct {
 	Stderr         []string
 }
 
-// ModuleBuildResult represents the output of a Maven build
+// StageBuildResult captures the container state, logs, and artifacts produced by a single stage.
 type StageBuildResult struct {
 	Container *dagger.Container
 	Artifacts *dagger.Directory
@@ -24,14 +24,14 @@ type StageBuildResult struct {
 	Stderr    string
 }
 
-// PipelineStage represents a stage in a Maven pipeline
+// PipelineStage represents a single set of Maven goals executed within the pipeline.
 type PipelineStage struct {
 	DisplayName string
 	Goals       []string
 	Options     []string
 }
 
-// Maven Jib
+// JibConfig contains the information required to execute the Jib Maven plugin and push images.
 type JibConfig struct {
 	Registry string
 	Group    string // External (env_vars)
@@ -43,6 +43,7 @@ type JibConfig struct {
 	Options        []string // From Pipeline Stage
 }
 
+// NewJibConfig creates a JibConfig pre-populated with registry coordinates and credentials.
 func (m *Maven) NewJibConfig(
 	registry string,
 	group string,

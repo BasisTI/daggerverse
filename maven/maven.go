@@ -8,7 +8,10 @@ import (
 	"fmt"
 )
 
+// DefaultMavenCacheName identifies the cache volume used for the Maven local repository.
 const DefaultMavenCacheName = "maven-cache"
+
+// BaseWorkdir is the working directory inside the container where builds are executed.
 const BaseWorkdir = "/app"
 
 type pomProject struct {
@@ -18,7 +21,7 @@ type pomProject struct {
 	Version string `xml:"version"`
 }
 
-// Maven Module
+// Maven models the configuration and reusable container used to run Maven-based builds.
 type Maven struct {
 	// image for executing Builds
 	Image string
@@ -36,9 +39,10 @@ type Maven struct {
 	BaseContainer *dagger.Container
 }
 
+// DefaultMvnCiOptions lists the flags automatically added when UseDefaultCiOptions is enabled.
 var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
 
-// New creates a new Maven Module
+// New constructs a Maven helper ready to execute builds with the provided base options.
 func New(
 	// image for executing Builds
 	// +default="maven:3.9.9-eclipse-temurin-21-alpine"
@@ -68,8 +72,7 @@ func New(
 	}
 }
 
-// NewBaseContainer Initialize base maven container.
-// If there is a parent, add the pom in the base Working Directory
+// NewBaseContainer initializes the base container with caches and optional parent POM installation.
 func (m *Maven) NewBaseContainer() *dagger.Container {
 	container := dag.Container().From(m.Image).WithWorkdir(BaseWorkdir)
 	if m.UseCache {
@@ -85,16 +88,12 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 	return container
 }
 
+// Container ensures a base container exists and returns it for further customization.
 func (m *Maven) Container() *dagger.Container {
 	if m.BaseContainer == nil {
 		m.BaseContainer = m.NewBaseContainer()
 	}
 	return m.BaseContainer
-}
-
-func (m *Maven) MavenBuild(goals []string) *Maven {
-	m.BaseContainer = m.Container().WithExec(m.getFullMvnCommand(goals))
-	return m
 }
 
 func (m *Maven) getFullMvnCommand(goals []string) []string {
@@ -120,8 +119,7 @@ func (m *Maven) getFullMvnModuleCommand(moduleOptions []string, goals []string) 
 	return append(execCmd, goals...)
 }
 
-// GetVersion returns the project version from pom.xml in the moduleDir
-// If not set and there is a Parent, take from there
+// GetVersion reads the module pom.xml (falling back to the parent POM) and returns the version value.
 func (m *Maven) GetVersion(ctx context.Context, moduleDir *dagger.Directory) (string, error) {
 	if moduleDir == nil {
 		return "", fmt.Errorf("cannot get version: maven directory is not set")
@@ -141,6 +139,7 @@ func (m *Maven) GetVersion(ctx context.Context, moduleDir *dagger.Directory) (st
 	return project.Version, nil
 }
 
+// GetVersionOrDefault returns the module version or the provided default when it cannot be resolved.
 func (m *Maven) GetVersionOrDefault(ctx context.Context, moduleDir *dagger.Directory, defaultVersion string) string {
 	version, err := m.GetVersion(ctx, moduleDir)
 	if err != nil {
@@ -149,6 +148,7 @@ func (m *Maven) GetVersionOrDefault(ctx context.Context, moduleDir *dagger.Direc
 	return version
 }
 
+// readProject reads and unmarshals a pom.xml file into a lightweight pomProject representation.
 func (m *Maven) readProject(ctx context.Context, pomFile *dagger.File) (*pomProject, error) {
 	pomXML, err := pomFile.Contents(ctx)
 	if err != nil {
