@@ -43,6 +43,7 @@ type JibConfig struct {
 }
 
 func (m *Maven) NewJibConfig(
+	// +
 	registry string,
 	group string,
 	username string,

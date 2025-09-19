@@ -50,7 +50,7 @@ func (m *Maven) buildSonarOptions(config *SonarConfig) []string {
 	}
 
 	if config.Token != "" {
-		options = append(options, fmt.Sprintf("-Dsonar.login=%s", config.Token))
+		options = append(options, fmt.Sprintf("-Dsonar.token=%s", config.Token))
 	}
 
 	if config.ProjectKey != "" {

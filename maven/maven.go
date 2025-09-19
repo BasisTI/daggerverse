@@ -141,6 +141,14 @@ func (m *Maven) GetVersion(ctx context.Context, moduleDir *dagger.Directory) (st
 	return project.Version, nil
 }
 
+func (m *Maven) GetVersionOrDefault(ctx context.Context, moduleDir *dagger.Directory, defaultVersion string) string {
+	version, err := m.GetVersion(ctx, moduleDir)
+	if err != nil {
+		version = defaultVersion
+	}
+	return version
+}
+
 func (m *Maven) readProject(ctx context.Context, pomFile *dagger.File) (*pomProject, error) {
 	pomXML, err := pomFile.Contents(ctx)
 	if err != nil {

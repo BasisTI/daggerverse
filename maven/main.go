@@ -8,32 +8,26 @@ import (
 )
 
 // FullBuildModules Builds all stages: compile+test, sonar, docker push for a list of modules
-func (m *Maven) FullBuildModules(
-	ctx context.Context,
-	source *dagger.Directory,
-	modules []string,
-	sonarConfig *SonarConfig,
-	jibConfig *JibConfig) []*ModuleBuildResult {
+func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, modules []string, sonarConfig *SonarConfig, jibConfig *JibConfig) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
-		result := m.FullBuild(ctx, source, module, sonarConfig, jibConfig)
+		result, err := m.FullBuild(ctx, source, module, sonarConfig, jibConfig)
+		if err != nil {
+			return nil, err
+		}
 		results = append(results, result)
 	}
-	return results
+	return results, nil
 }
 
 // FullBuild Builds all stages: compile+test, sonar, docker push for a given maven module
-func (m *Maven) FullBuild(
-	ctx context.Context,
-	source *dagger.Directory,
-	module string,
-	sonarConfig *SonarConfig,
-	jibConfig *JibConfig) *ModuleBuildResult {
+func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module string, sonarConfig *SonarConfig, jibConfig *JibConfig) (*ModuleBuildResult, error) {
 
 	moduleSonarConfig := *sonarConfig
 	moduleJibConfig := *jibConfig
 	moduleSonarConfig.ProjectKey = module
-	jibConfig.Image = module
+	moduleJibConfig.Image = module
+	moduleJibConfig.Tag = m.GetVersionOrDefault(ctx, source, "lastest")
 	stages := []PipelineStage{
 		{
 			DisplayName: "Build and Test",
@@ -50,20 +44,26 @@ func (m *Maven) FullBuild(
 			Options:     m.buildJibOptions(&moduleJibConfig),
 		},
 	}
-	return m.executeStages(ctx, source.Directory(module), module, stages)
+	buildResult, err := m.executeStages(ctx, source.Directory(module), module, stages)
+	if err != nil {
+		return nil, err
+	}
+	buildResult.ImageUrl = moduleJibConfig.getImageUrl()
+	return buildResult, nil
 }
 
+// executeStages Execute pipeline stages stage by stage
 func (m *Maven) executeStages(
 	ctx context.Context,
 	source *dagger.Directory,
 	module string,
-	stages []PipelineStage) *ModuleBuildResult {
+	stages []PipelineStage) (*ModuleBuildResult, error) {
 	stageContainer := m.Container()
 	result := &ModuleBuildResult{}
 	for i, stage := range stages {
 		buildResultStage, err := m.executeStage(ctx, source, module, i, stage, stageContainer)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		stageContainer = buildResultStage.Container
 		result.Stdout = append(result.Stdout, buildResultStage.Stdout)
@@ -71,7 +71,7 @@ func (m *Maven) executeStages(
 		result.ExecutedStages = append(result.ExecutedStages, stage.DisplayName)
 		result.Artifacts = buildResultStage.Artifacts
 	}
-	return result
+	return result, nil
 }
 
 func (m *Maven) executeStage(
@@ -111,11 +111,9 @@ func (m *Maven) buildJibOptions(config *JibConfig) []string {
 
 	var options []string
 
-	if config.Registry != "" && config.Image != "" {
-		imageUrl := fmt.Sprintf("%s/%s/%s", config.Registry, config.Group, config.Image)
-		if config.Tag != "" {
-			imageUrl = fmt.Sprintf("%s:%s", imageUrl, config.Tag)
-		}
+	imageUrl := config.getImageUrl()
+
+	if imageUrl != "" {
 		options = append(options, fmt.Sprintf("-Djib.to.image=%s", imageUrl))
 	}
 
@@ -134,17 +132,16 @@ func (m *Maven) buildJibOptions(config *JibConfig) []string {
 	return options
 }
 
-func (m *Maven) getImageUrl(config *JibConfig) (string, error) {
+func (j *JibConfig) getImageUrl() string {
 	imageUrl := ""
-	var err error = nil
-	if config.Registry != "" && config.Group != "" && config.Image != "" {
-		imageUrl = fmt.Sprintf("%s/%s/%s", config.Registry, config.Group, config.Image)
-		if config.Tag != "" {
-			imageUrl = fmt.Sprintf("%s:%s", imageUrl, config.Tag)
-		}
-		return imageUrl, nil
+	if j.Image != "" {
+		imageUrl = fmt.Sprintf("%s/%s/%s", j.Registry, j.Group, j.Image)
 	} else {
-		err = fmt.Errorf("registry, group or image is empty in jib configuration")
+		imageUrl = fmt.Sprintf("%s/%s", j.Registry, j.Group)
 	}
-	return imageUrl, err
+	tag := j.Tag
+	if j.Tag == "" {
+		tag = "latest"
+	}
+	return fmt.Sprintf("%s:%s", imageUrl, tag)
 }
