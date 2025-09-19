@@ -1,4 +1,4 @@
-// Dagger module to build maven Projects
+// Dagger module to build Maven projects.
 package main
 
 import (
@@ -8,10 +8,10 @@ import (
 )
 
 // FullBuildModules orchestrates build, test, Sonar analysis, and image publishing for each module in order.
-func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, modules []string, sonarConfig *SonarConfig, jibConfig *JibConfig) ([]*ModuleBuildResult, error) {
+func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, modules []string, sonarConfig *SonarConfig, dockerConfig *DockerBuildConfig) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
-		result, err := m.FullBuild(ctx, source, module, sonarConfig, jibConfig)
+		result, err := m.FullBuild(ctx, source, module, sonarConfig, dockerConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -20,19 +20,19 @@ func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, 
 	return results, nil
 }
 
-// FullBuild executes the three-stage pipeline (build/test, Sonar, Jib) for a single Maven module.
-func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module string, sonarConfig *SonarConfig, jibConfig *JibConfig) (*ModuleBuildResult, error) {
+// FullBuild executes the three-stage pipeline (build/test, Sonar, Docker publish) for a single Maven module.
+func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module string, sonarConfig *SonarConfig, dockerConfig *DockerBuildConfig) (*ModuleBuildResult, error) {
 
 	moduleSonarConfig := *sonarConfig
-	moduleJibConfig := *jibConfig
+	moduleDockerConfig := *dockerConfig
 	moduleSonarConfig.ProjectKey = module
-	moduleJibConfig.Image = module
-	moduleJibConfig.Tag = m.GetVersionOrDefault(ctx, source, "lastest")
+	moduleDockerConfig.Image = module
+	moduleDockerConfig.Tag = m.GetVersionOrDefault(ctx, source, "lastest")
 	sonarOptions, err := m.buildSonarOptions(ctx, &moduleSonarConfig)
 	if err != nil {
 		return nil, err
 	}
-	jibOptions, err := m.buildJibOptions(ctx, &moduleJibConfig)
+	dockerOptions, err := m.buildDockerOptions(ctx, &moduleDockerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -47,16 +47,16 @@ func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module 
 			Options:     sonarOptions,
 		},
 		{
-			DisplayName: "Docker Build and Push with Jib",
+			DisplayName: "Docker Build and Push",
 			Goals:       []string{"jib:build"},
-			Options:     jibOptions,
+			Options:     dockerOptions,
 		},
 	}
 	buildResult, err := m.executeStages(ctx, source.Directory(module), module, stages)
 	if err != nil {
 		return nil, err
 	}
-	buildResult.ImageUrl = moduleJibConfig.getImageUrl()
+	buildResult.ImageUrl = moduleDockerConfig.imageReference("latest")
 	return buildResult, nil
 }
 
@@ -113,18 +113,18 @@ func (m *Maven) executeStage(
 	}, nil
 }
 
-// buildJibOptions materializes the Maven command-line arguments needed to run the Jib plugin.
-func (m *Maven) buildJibOptions(ctx context.Context, config *JibConfig) ([]string, error) {
+// buildDockerOptions materializes the Maven command-line arguments needed to run the Jib plugin.
+func (m *Maven) buildDockerOptions(ctx context.Context, config *DockerBuildConfig) ([]string, error) {
 	if config == nil {
 		return nil, nil
 	}
 
 	var options []string
 
-	imageUrl := config.getImageUrl()
+	imageURL := config.imageReference("latest")
 
-	if imageUrl != "" {
-		options = append(options, fmt.Sprintf("-Djib.to.image=%s", imageUrl))
+	if imageURL != "" {
+		options = append(options, fmt.Sprintf("-Djib.to.image=%s", imageURL))
 	}
 
 	if config.Username != "" {
@@ -144,19 +144,4 @@ func (m *Maven) buildJibOptions(ctx context.Context, config *JibConfig) ([]strin
 	}
 
 	return options, nil
-}
-
-// getImageUrl resolves the fully-qualified image reference, applying the default tag when needed.
-func (j *JibConfig) getImageUrl() string {
-	imageUrl := ""
-	if j.Image != "" {
-		imageUrl = fmt.Sprintf("%s/%s/%s", j.Registry, j.Group, j.Image)
-	} else {
-		imageUrl = fmt.Sprintf("%s/%s", j.Registry, j.Group)
-	}
-	tag := j.Tag
-	if j.Tag == "" {
-		tag = "latest"
-	}
-	return fmt.Sprintf("%s:%s", imageUrl, tag)
 }

@@ -3,45 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-
-	"dagger/maven/internal/dagger"
 )
-
-// SonarConfig stores the data required to invoke SonarQube analysis for a module.
-type SonarConfig struct {
-	// Host Sonarqube instance address
-	Host string
-	// TokenSecret keeps the credential encrypted until we need to use it.
-	TokenSecret *dagger.Secret
-	// ProjectKey Optional, Key of the project in Sonar
-	ProjectKey string
-	// WaitForQualityGate Wait for quality gate analysis to complete
-	WaitForQualityGate bool
-	// ExtraOptions Extra Options if needed, like
-	// TODO ver sonar.qualitygate.timeout
-	// TODO ver sonar.branch.name
-	ExtraOptions []string
-}
-
-// NewSonarConfig validates input and returns a SonarConfig bound to the provided token secret.
-func (m *Maven) NewSonarConfig(
-	host string,
-	tokenSecret *dagger.Secret,
-	// Wait for quality gate analysis to complete
-	// +default=true
-	waitForQualityGate bool,
-	// +optional
-	extraOptions []string) (*SonarConfig, error) {
-	retorno := SonarConfig{}
-	if host == "" || tokenSecret == nil {
-		return nil, fmt.Errorf("host or token is empty")
-	}
-	retorno.Host = host
-	retorno.TokenSecret = tokenSecret
-	retorno.WaitForQualityGate = waitForQualityGate
-	retorno.ExtraOptions = extraOptions
-	return &retorno, nil
-}
 
 // buildSonarOptions renders the Maven command-line options required to execute Sonar analysis.
 func (m *Maven) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]string, error) {

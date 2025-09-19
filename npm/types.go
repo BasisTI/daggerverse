@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 
-	"dagger/maven/internal/dagger"
+	"dagger/npm/internal/dagger"
 )
 
-// ModuleBuildResult represents the aggregated outcome of a Maven module build.
-type ModuleBuildResult struct {
+// BuildResult aggregates the outcome of the npm pipeline for a single project.
+type BuildResult struct {
 	Artifacts      *dagger.Directory
 	Container      *dagger.Container
 	ImageUrl       string
@@ -16,15 +16,15 @@ type ModuleBuildResult struct {
 	Stderr         []string
 }
 
-// StageBuildResult captures the container state, logs, and artifacts produced by a single stage.
-type StageBuildResult struct {
+// StageResult captures the intermediate state produced by a single pipeline stage.
+type StageResult struct {
 	Container *dagger.Container
 	Artifacts *dagger.Directory
 	Stdout    string
 	Stderr    string
 }
 
-// PipelineStage represents a single set of Maven goals executed within the pipeline.
+// PipelineStage describes a command (or legacy goals/options) executed in sequence.
 type PipelineStage struct {
 	DisplayName string
 	Command     []string
@@ -32,7 +32,7 @@ type PipelineStage struct {
 	Options     []string
 }
 
-// DockerBuildConfig contains the information required to execute the Jib Maven plugin and push images.
+// DockerBuildConfig stores the data needed to construct an image reference and authenticate pushes.
 type DockerBuildConfig struct {
 	Registry       string
 	Group          string
@@ -43,7 +43,7 @@ type DockerBuildConfig struct {
 	Options        []string
 }
 
-// SonarConfig stores the data required to invoke SonarQube analysis for a module.
+// SonarConfig encapsulates the parameters required to run SonarQube analysis from npm.
 type SonarConfig struct {
 	Host               string
 	TokenSecret        *dagger.Secret
@@ -52,8 +52,8 @@ type SonarConfig struct {
 	ExtraOptions       []string
 }
 
-// NewDockerBuildConfig creates a DockerBuildConfig tailored for Maven builds.
-func (m *Maven) NewDockerBuildConfig(registry, group, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
+// NewDockerBuildConfig returns a DockerBuildConfig initialised with registry metadata and credentials.
+func (n *Npm) NewDockerBuildConfig(registry, group, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
 	return DockerBuildConfig{
 		Registry:       registry,
 		Group:          group,
@@ -62,8 +62,8 @@ func (m *Maven) NewDockerBuildConfig(registry, group, username string, passwordS
 	}
 }
 
-// NewSonarConfig validates Maven Sonar settings and returns a reusable configuration struct.
-func (m *Maven) NewSonarConfig(host string, tokenSecret *dagger.Secret, waitForQualityGate bool, extraOptions []string) (*SonarConfig, error) {
+// NewSonarConfig validates the provided inputs and returns an npm-specific Sonar configuration.
+func (n *Npm) NewSonarConfig(host string, tokenSecret *dagger.Secret, waitForQualityGate bool, extraOptions []string) (*SonarConfig, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is empty")
 	}
@@ -78,6 +78,7 @@ func (m *Maven) NewSonarConfig(host string, tokenSecret *dagger.Secret, waitForQ
 	}, nil
 }
 
+// imageReference formats a fully-qualified image reference, defaulting the tag when absent.
 func (c *DockerBuildConfig) imageReference(defaultTag string) string {
 	ref := c.Registry
 	if c.Group != "" {
