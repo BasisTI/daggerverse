@@ -27,16 +27,16 @@ type packageJSON struct {
 
 // New constructs an npm helper bound to the provided source directory and runtime configuration.
 func New(
-// Directory with node/npm source code
+	// Directory with node/npm source code
 	source *dagger.Directory,
-// BuildImage name for building application
-// +default="node:22.16.0-alpine3.22"
+	// BuildImage name for building application
+	// +default="node:22.16.0-alpine3.22"
 	buildImage string,
-// BuildImage name for building application
-// +default="nginx:1.27.3-alpine-slim"
+	// BuildImage name for building application
+	// +default="nginx:1.27.3-alpine-slim"
 	runImage string,
-// Use Npm Cache
-// +default=true
+	// Use Npm Cache
+	// +default=true
 	useCache bool) *Npm {
 	return &Npm{
 		BuildImage: buildImage,
@@ -126,7 +126,7 @@ func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerCon
 	if dockerConfig != nil {
 		version := n.GetVersionOrDefault(ctx, "latest")
 		container := result.Container
-		container = container.From("nginx:1.27.3-alpine-slim").
+		container = container.From(n.RunImage).
 			WithLabel("version", version).
 			WithDirectory("/usr/share/nginx/html/", result.Artifacts).
 			WithRegistryAuth(dockerConfig.Registry, dockerConfig.Username, dockerConfig.PasswordSecret)
