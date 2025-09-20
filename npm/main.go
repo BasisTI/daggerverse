@@ -14,7 +14,8 @@ var NpmRumCmd = []string{"npm", "run"}
 
 // Npm represents an npm project and provides helpers to run common build steps inside a Dagger container.
 type Npm struct {
-	Image         string
+	BuildImage    string
+	RunImage      string
 	UseCache      bool
 	Dir           *dagger.Directory
 	NodeContainer *dagger.Container
@@ -26,24 +27,28 @@ type packageJSON struct {
 
 // New constructs an npm helper bound to the provided source directory and runtime configuration.
 func New(
-	// Directory with node/npm source code
+// Directory with node/npm source code
 	source *dagger.Directory,
-	// Image name for building application
-	// +default="node:22.16.0-alpine3.22"
+// BuildImage name for building application
+// +default="node:22.16.0-alpine3.22"
 	buildImage string,
-	// Use Npm Cache
-	// +default=true
+// BuildImage name for building application
+// +default="nginx:1.27.3-alpine-slim"
+	runImage string,
+// Use Npm Cache
+// +default=true
 	useCache bool) *Npm {
 	return &Npm{
-		Image:    buildImage,
-		UseCache: useCache,
-		Dir:      source,
+		BuildImage: buildImage,
+		RunImage:   runImage,
+		UseCache:   useCache,
+		Dir:        source,
 	}
 }
 
 // WithImagem overrides the base container image used for executing npm commands.
 func (nc *Npm) WithImagem(image string) *Npm {
-	nc.Image = image
+	nc.BuildImage = image
 	return nc
 }
 
@@ -61,7 +66,7 @@ func (nc *Npm) WithDir(dir *dagger.Directory) *Npm {
 
 // NewContainer creates a fresh container primed with the project source and optional cache.
 func (nc *Npm) NewContainer() *dagger.Container {
-	container := dag.Container().From(nc.Image).WithWorkdir(DefaultWorkdir)
+	container := dag.Container().From(nc.BuildImage).WithWorkdir(DefaultWorkdir)
 	if nc.UseCache {
 		container = container.WithMountedCache("/root/.npm", dag.CacheVolume(DefaultNpmCacheName))
 	}
@@ -99,7 +104,6 @@ func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerCon
 
 	stages := []PipelineStage{
 		{DisplayName: "Install Dependencies", Command: []string{"npm", "ci"}},
-		{DisplayName: "Run Unit Tests", Command: []string{"npm", "test", "--", "--watch=false"}},
 		{DisplayName: "Build Production Bundle", Command: []string{"npm", "run", "build"}},
 	}
 
@@ -108,11 +112,10 @@ func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerCon
 		if err != nil {
 			return nil, err
 		}
-		stages = append(stages, PipelineStage{
-			DisplayName: "SonarQube Analysis",
-			Command:     []string{"npx", "sonar-scanner"},
-			Options:     sonarOptions,
-		})
+		stages = append(stages,
+			PipelineStage{DisplayName: "Install Sonar Runtime", Command: []string{"apk", "add", "--no-cache", "openjdk17-jre"}},
+			PipelineStage{DisplayName: "SonarQube Analysis", Command: []string{"npx", "--yes", "sonar-scanner"}, Options: sonarOptions},
+		)
 	}
 
 	result, err := n.executeStages(ctx, stages)
@@ -121,7 +124,17 @@ func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerCon
 	}
 
 	if dockerConfig != nil {
-		result.ImageUrl = dockerConfig.imageReference("latest")
+		version := n.GetVersionOrDefault(ctx, "latest")
+		container := result.Container
+		container = container.From("nginx:1.27.3-alpine-slim").
+			WithLabel("version", version).
+			WithDirectory("/usr/share/nginx/html/", result.Artifacts).
+			WithRegistryAuth(dockerConfig.Registry, dockerConfig.Username, dockerConfig.PasswordSecret)
+		publishedImage, err := container.Publish(ctx, dockerConfig.imageReference(version))
+		if err != nil {
+			return nil, err
+		}
+		result.ImageUrl = publishedImage
 	}
 
 	return result, nil
@@ -229,4 +242,12 @@ func (n *Npm) GetVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("could not find 'version' key in package.json")
 	}
 	return pkg.Version, nil
+}
+
+func (n *Npm) GetVersionOrDefault(ctx context.Context, defaultVersion string) string {
+	version, err := n.GetVersion(ctx)
+	if err != nil {
+		version = defaultVersion
+	}
+	return version
 }

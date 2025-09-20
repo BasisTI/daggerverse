@@ -53,17 +53,24 @@ type SonarConfig struct {
 }
 
 // NewDockerBuildConfig returns a DockerBuildConfig initialised with registry metadata and credentials.
-func (n *Npm) NewDockerBuildConfig(registry, group, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
+func (n *Npm) NewDockerBuildConfig(registry string, group string, image string, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
 	return DockerBuildConfig{
 		Registry:       registry,
 		Group:          group,
+		Image:          image,
 		Username:       username,
 		PasswordSecret: passwordSecret,
 	}
 }
 
 // NewSonarConfig validates the provided inputs and returns an npm-specific Sonar configuration.
-func (n *Npm) NewSonarConfig(host string, tokenSecret *dagger.Secret, waitForQualityGate bool, extraOptions []string) (*SonarConfig, error) {
+func (n *Npm) NewSonarConfig(host string,
+	tokenSecret *dagger.Secret,
+	projectKey string,
+	// +default=true
+	waitForQualityGate bool,
+	// +optional
+	extraOptions []string) (*SonarConfig, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is empty")
 	}
@@ -73,6 +80,7 @@ func (n *Npm) NewSonarConfig(host string, tokenSecret *dagger.Secret, waitForQua
 	return &SonarConfig{
 		Host:               host,
 		TokenSecret:        tokenSecret,
+		ProjectKey:         projectKey,
 		WaitForQualityGate: waitForQualityGate,
 		ExtraOptions:       extraOptions,
 	}, nil
