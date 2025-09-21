@@ -1,7 +1,7 @@
 package main
 
 import (
-	"dagger/npm/internal/dagger"
+	"dagger/uv/internal/dagger"
 	"fmt"
 )
 
@@ -44,15 +44,19 @@ type DockerBuildConfig struct {
 
 // SonarConfig encapsulates the parameters required to run SonarQube analysis from npm.
 type SonarConfig struct {
+	AnalysisImage      string
 	Host               string
 	TokenSecret        *dagger.Secret
 	ProjectKey         string
+	CacheKey           string
+	UseCache           bool
 	WaitForQualityGate bool
+	WorkDir            string
 	ExtraOptions       []string
 }
 
 // NewDockerBuildConfig returns a DockerBuildConfig initialised with registry metadata and credentials.
-func (n *Npm) NewDockerBuildConfig(registry string, group string, image string, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
+func (u *Uv) NewDockerBuildConfig(registry string, group string, image string, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
 	return DockerBuildConfig{
 		Registry:       registry,
 		Group:          group,
@@ -63,11 +67,19 @@ func (n *Npm) NewDockerBuildConfig(registry string, group string, image string, 
 }
 
 // NewSonarConfig validates the provided inputs and returns an npm-specific Sonar configuration.
-func (n *Npm) NewSonarConfig(host string,
+func (u *Uv) NewSonarConfig(host string,
 	tokenSecret *dagger.Secret,
 	projectKey string,
+	// +default="sonarsource/sonar-scanner-cli:11.4.0.2044_7.2.0"
+	analysisImage string,
+	// +default="SONARQUBE-CACHE"
+	cacheKey string,
+	// +default=true
+	useCache bool,
 	// +default=true
 	waitForQualityGate bool,
+	// +default="/usr/src"
+	workDir string,
 	// +optional
 	extraOptions []string) (*SonarConfig, error) {
 	if host == "" {
@@ -79,7 +91,10 @@ func (n *Npm) NewSonarConfig(host string,
 	return &SonarConfig{
 		Host:               host,
 		TokenSecret:        tokenSecret,
+		AnalysisImage:      analysisImage,
 		ProjectKey:         projectKey,
+		CacheKey:           cacheKey,
+		UseCache:           useCache,
 		WaitForQualityGate: waitForQualityGate,
 		ExtraOptions:       extraOptions,
 	}, nil
@@ -99,4 +114,13 @@ func (c *DockerBuildConfig) imageReference(defaultTag string) string {
 		tag = defaultTag
 	}
 	return fmt.Sprintf("%s:%s", ref, tag)
+}
+
+var buildCustomizations = map[string]dagger.WithContainerFunc{
+	"dlt": func(c *dagger.Container) *dagger.Container {
+		return c.WithoutDirectory(".dlt")
+	},
+	"dbt": func(c *dagger.Container) *dagger.Container {
+		return c.WithoutDirectory(".env")
+	},
 }
