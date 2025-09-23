@@ -76,7 +76,7 @@ func (n *Npm) GetAngularDistDir() *dagger.Directory {
 // FullBuild executes a typical npm pipeline: install dependencies, run tests, build assets, optional Sonar analysis, and image metadata preparation.
 func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerConfig *DockerBuildConfig) (*BuildResult, error) {
 	if n.Source == nil {
-		return nil, fmt.Errorf("npm directory is not set")
+		return nil, fmt.Errorf("source is nil")
 	}
 
 	stages := []PipelineStage{
