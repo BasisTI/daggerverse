@@ -8,7 +8,14 @@ import (
 )
 
 // FullBuildModules orchestrates build, test, Sonar analysis, and image publishing for each module in order.
-func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, modules []string, sonarConfig *SonarConfig, dockerConfig *DockerBuildConfig) ([]*ModuleBuildResult, error) {
+func (m *Maven) FullBuildModules(
+	ctx context.Context,
+	source *dagger.Directory,
+	modules []string,
+	// +optional
+	sonarConfig *SonarConfig,
+	// +optional
+	dockerConfig *DockerBuildConfig) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
 		result, err := m.FullBuild(ctx, source, module, sonarConfig, dockerConfig)
@@ -21,43 +28,76 @@ func (m *Maven) FullBuildModules(ctx context.Context, source *dagger.Directory, 
 }
 
 // FullBuild executes the three-stage pipeline (build/test, Sonar, Docker publish) for a single Maven module.
-func (m *Maven) FullBuild(ctx context.Context, source *dagger.Directory, module string, sonarConfig *SonarConfig, dockerConfig *DockerBuildConfig) (*ModuleBuildResult, error) {
+func (m *Maven) FullBuild(ctx context.Context,
+	source *dagger.Directory,
+	module string,
+	sonarConfig *SonarConfig,
+	dockerConfig *DockerBuildConfig) (*ModuleBuildResult, error) {
 
-	moduleSonarConfig := *sonarConfig
-	moduleDockerConfig := *dockerConfig
-	moduleSonarConfig.ProjectKey = module
-	moduleDockerConfig.Image = module
-	moduleDockerConfig.Tag = m.GetVersionOrDefault(ctx, source, "lastest")
-	sonarOptions, err := m.buildSonarOptions(ctx, &moduleSonarConfig)
-	if err != nil {
-		return nil, err
-	}
-	dockerOptions, err := m.buildDockerOptions(ctx, &moduleDockerConfig)
-	if err != nil {
-		return nil, err
-	}
 	stages := []PipelineStage{
 		{
 			DisplayName: "Build and Test",
 			Goals:       []string{"clean", "verify"},
 		},
-		{
-			DisplayName: "SonarQube Analysis",
-			Goals:       []string{"sonar:sonar"},
-			Options:     sonarOptions,
-		},
-		{
-			DisplayName: "Docker Build and Push",
-			Goals:       []string{"jib:build"},
-			Options:     dockerOptions,
-		},
 	}
+
+	if sonarConfig != nil {
+		sonarStage, err := m.configureSonar(ctx, sonarConfig, module)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, sonarStage)
+	}
+
+	imageUrl := ""
+	if dockerConfig != nil {
+		dockerStage, image, err := m.configureDockerPublish(ctx, source, module, dockerConfig)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, dockerStage)
+		imageUrl = image
+	}
+
 	buildResult, err := m.executeStages(ctx, source.Directory(module), module, stages)
 	if err != nil {
 		return nil, err
 	}
-	buildResult.ImageUrl = moduleDockerConfig.imageReference("latest")
+	buildResult.ImageUrl = imageUrl
 	return buildResult, nil
+}
+
+func (m *Maven) configureDockerPublish(
+	ctx context.Context,
+	source *dagger.Directory,
+	module string,
+	dockerConfig *DockerBuildConfig) (PipelineStage, string, error) {
+	moduleDockerConfig := *dockerConfig
+	moduleDockerConfig.Image = module
+	moduleDockerConfig.Tag = m.GetVersionOrDefault(ctx, source, "latest")
+	dockerOptions, err := m.buildDockerOptions(ctx, &moduleDockerConfig)
+	if err != nil {
+		return PipelineStage{}, "", err
+	}
+	return PipelineStage{
+		DisplayName: "Docker Build and Push",
+		Goals:       []string{"jib:build"},
+		Options:     dockerOptions,
+	}, moduleDockerConfig.imageReference("latest"), nil
+}
+
+func (m *Maven) configureSonar(ctx context.Context, sonarConfig *SonarConfig, module string) (PipelineStage, error) {
+	moduleSonarConfig := *sonarConfig
+	moduleSonarConfig.ProjectKey = module
+	sonarOptions, err := m.buildSonarOptions(ctx, &moduleSonarConfig)
+	if err != nil {
+		return PipelineStage{}, err
+	}
+	return PipelineStage{
+		DisplayName: "SonarQube Analysis",
+		Goals:       []string{"sonar:sonar"},
+		Options:     sonarOptions,
+	}, nil
 }
 
 // executeStages runs the provided pipeline stages sequentially using a shared container.
@@ -68,8 +108,8 @@ func (m *Maven) executeStages(
 	stages []PipelineStage) (*ModuleBuildResult, error) {
 	stageContainer := m.Container()
 	result := &ModuleBuildResult{}
-	for i, stage := range stages {
-		buildResultStage, err := m.executeStage(ctx, source, module, i, stage, stageContainer)
+	for _, stage := range stages {
+		buildResultStage, err := m.executeStage(ctx, source, module, stage, stageContainer)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +127,6 @@ func (m *Maven) executeStage(
 	ctx context.Context,
 	source *dagger.Directory,
 	module string,
-	stageNumber int,
 	stage PipelineStage,
 	stageContainer *dagger.Container) (*StageBuildResult, error) {
 	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)

@@ -92,3 +92,5 @@ func (c *DockerBuildConfig) imageReference(defaultTag string) string {
 	}
 	return fmt.Sprintf("%s:%s", ref, tag)
 }
+
+//type WithContainerFunc func(r *Container) *Container

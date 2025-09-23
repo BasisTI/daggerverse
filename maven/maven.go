@@ -6,13 +6,17 @@ import (
 	"dagger/maven/internal/dagger"
 	"encoding/xml"
 	"fmt"
+	"strings"
 )
 
 // DefaultMavenCacheName identifies the cache volume used for the Maven local repository.
-const DefaultMavenCacheName = "maven-cache"
+const (
+	DefaultMavenCacheName = "maven-cache"
+	// BaseWorkdir is the working directory inside the container where builds are executed.
+	BaseWorkdir = "/app"
+)
 
-// BaseWorkdir is the working directory inside the container where builds are executed.
-const BaseWorkdir = "/app"
+var DefaultDockerHosts = []string{"registry-1.docker.io", "registry.hub.docker.com", "quay.io", "ghcr.io"}
 
 type pomProject struct {
 	// XMLName is used to ensure we're parsing the <project> element.
@@ -36,11 +40,12 @@ type Maven struct {
 	// Optional Parent POM for multi-modules buils
 	ParentPom *dagger.File
 	// Container used to run the builds
-	BaseContainer *dagger.Container
+	baseContainer *dagger.Container
+	UseJib        bool
 }
 
 // DefaultMvnCiOptions lists the flags automatically added when UseDefaultCiOptions is enabled.
-var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
+var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true", "-DskipTests"}
 
 // New constructs a Maven helper ready to execute builds with the provided base options.
 func New(
@@ -61,15 +66,19 @@ func New(
 	extraOptions []string,
 	// Parent Pom if multi-module project
 	// +optional
-	parentPom *dagger.File) *Maven {
-	return &Maven{
+	parentPom *dagger.File,
+	// +default=true
+	useJib bool) *Maven {
+	m := &Maven{
 		Image:               buildImage,
 		UseMvnw:             useMvnw,
 		UseCache:            useCache,
 		UseDefaultCiOptions: useDefaultCiOptions,
 		ExtraOptions:        extraOptions,
 		ParentPom:           parentPom,
+		UseJib:              useJib,
 	}
+	return m
 }
 
 // NewBaseContainer initializes the base container with caches and optional parent POM installation.
@@ -83,17 +92,16 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 			WithFile(fmt.Sprintf("%s/%s", BaseWorkdir, "pom.xml"), m.ParentPom).
 			WithWorkdir(BaseWorkdir).
 			WithExec(m.getFullMvnModuleCommand([]string{"-N"}, []string{"install"}))
-		//WithExec([]string{"rm", "pom.xml"})
 	}
 	return container
 }
 
 // Container ensures a base container exists and returns it for further customization.
 func (m *Maven) Container() *dagger.Container {
-	if m.BaseContainer == nil {
-		m.BaseContainer = m.NewBaseContainer()
+	if m.baseContainer == nil {
+		m.baseContainer = m.NewBaseContainer()
 	}
-	return m.BaseContainer
+	return m.baseContainer
 }
 
 func (m *Maven) getFullMvnCommand(goals []string) []string {
@@ -159,4 +167,21 @@ func (m *Maven) readProject(ctx context.Context, pomFile *dagger.File) (*pomProj
 		return nil, fmt.Errorf("failed to parse pom.xml: %w", err)
 	}
 	return &project, nil
+}
+
+func uniqueNonEmpty(values []string) []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }

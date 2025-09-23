@@ -27,8 +27,10 @@ type StageResult struct {
 type PipelineStage struct {
 	DisplayName string
 	Command     []string
+	Owner       string
 	Goals       []string
 	Options     []string
+	Image       string
 }
 
 // DockerBuildConfig stores the data needed to construct an image reference and authenticate pushes.
@@ -49,6 +51,7 @@ type SonarConfig struct {
 	ProjectKey         string
 	WaitForQualityGate bool
 	ExtraOptions       []string
+	Image              string
 }
 
 // NewDockerBuildConfig returns a DockerBuildConfig initialised with registry metadata and credentials.
@@ -69,7 +72,9 @@ func (n *Npm) NewSonarConfig(host string,
 	// +default=true
 	waitForQualityGate bool,
 	// +optional
-	extraOptions []string) (*SonarConfig, error) {
+	extraOptions []string,
+	// +default="sonarsource/sonar-scanner-cli:11.4.0.2044_7.2.0"
+	image string) (*SonarConfig, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is empty")
 	}
@@ -82,6 +87,7 @@ func (n *Npm) NewSonarConfig(host string,
 		ProjectKey:         projectKey,
 		WaitForQualityGate: waitForQualityGate,
 		ExtraOptions:       extraOptions,
+		Image:              image,
 	}, nil
 }
 

@@ -9,6 +9,7 @@ import (
 
 const DefaultNpmCacheName = "npm-cache"
 const DefaultWorkdir = "/app"
+const DefaultBuildDir = "dist"
 
 var NpmRumCmd = []string{"npm", "run"}
 
@@ -17,8 +18,9 @@ type Npm struct {
 	BuildImage    string
 	RunImage      string
 	UseCache      bool
-	Dir           *dagger.Directory
+	Source        *dagger.Directory
 	NodeContainer *dagger.Container
+	// TODO: put BuildResultDir here (example: "dist")
 }
 
 type packageJSON struct {
@@ -27,78 +29,53 @@ type packageJSON struct {
 
 // New constructs an npm helper bound to the provided source directory and runtime configuration.
 func New(
-	// Directory with node/npm source code
+// Directory with node/npm source code
 	source *dagger.Directory,
-	// BuildImage name for building application
-	// +default="node:22.16.0-alpine3.22"
+// BuildImage name for building application
+// +default="node:22.16.0-alpine3.22"
 	buildImage string,
-	// BuildImage name for building application
-	// +default="nginx:1.27.3-alpine-slim"
+// BuildImage name for building application
+// +default="nginx:1.27.3-alpine-slim"
 	runImage string,
-	// Use Npm Cache
-	// +default=true
+// Use Npm Cache
+// +default=true
 	useCache bool) *Npm {
 	return &Npm{
 		BuildImage: buildImage,
 		RunImage:   runImage,
 		UseCache:   useCache,
-		Dir:        source,
+		Source:     source,
 	}
-}
-
-// WithImagem overrides the base container image used for executing npm commands.
-func (nc *Npm) WithImagem(image string) *Npm {
-	nc.BuildImage = image
-	return nc
-}
-
-// WithUseCache toggles usage of the shared npm cache mount.
-func (nc *Npm) WithUseCache(useCache bool) *Npm {
-	nc.UseCache = useCache
-	return nc
-}
-
-// WithDir updates the source directory mounted into the npm container.
-func (nc *Npm) WithDir(dir *dagger.Directory) *Npm {
-	nc.Dir = dir
-	return nc
 }
 
 // NewContainer creates a fresh container primed with the project source and optional cache.
-func (nc *Npm) NewContainer() *dagger.Container {
-	container := dag.Container().From(nc.BuildImage).WithWorkdir(DefaultWorkdir)
-	if nc.UseCache {
+func (n *Npm) NewContainer() *dagger.Container {
+	container := dag.Container().From(n.BuildImage).WithWorkdir(DefaultWorkdir)
+	if n.UseCache {
 		container = container.WithMountedCache("/root/.npm", dag.CacheVolume(DefaultNpmCacheName))
 	}
-	if nc.Dir != nil {
-		container = container.WithDirectory(DefaultWorkdir, nc.Dir, dagger.ContainerWithDirectoryOpts{Exclude: []string{"node_modules", "dist"}})
+	if n.Source != nil {
+		container = container.WithDirectory(DefaultWorkdir, n.Source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"node_modules", "dist"}})
 	}
 	return container
 }
 
 // Container returns the memoised container, initialising it if needed.
-func (nc *Npm) Container() *dagger.Container {
-	if nc.NodeContainer == nil {
-		nc.NodeContainer = nc.NewContainer()
+func (n *Npm) Container() *dagger.Container {
+	if n.NodeContainer == nil {
+		n.NodeContainer = n.NewContainer()
 	}
-	return nc.NodeContainer
-}
-
-// NpmRun executes an npm script via `npm run` and updates the cached container state.
-func (nc *Npm) NpmRun(args []string) *Npm {
-	container := nc.Container()
-	nc.NodeContainer = container.WithExec(append(NpmRumCmd, args...))
-	return nc
+	return n.NodeContainer
 }
 
 // GetAngularDistDir returns the Angular distribution directory produced by the build.
-func (nc *Npm) GetAngularDistDir() *dagger.Directory {
-	return nc.Container().Directory(fmt.Sprintf("%s/dist/browser", DefaultWorkdir))
+func (n *Npm) GetAngularDistDir() *dagger.Directory {
+	return n.Container().Directory(fmt.Sprintf("%s/dist/browser", DefaultWorkdir))
 }
 
 // FullBuild executes a typical npm pipeline: install dependencies, run tests, build assets, optional Sonar analysis, and image metadata preparation.
 func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerConfig *DockerBuildConfig) (*BuildResult, error) {
-	if n.Dir == nil {
+	if n.Source == nil {
 		return nil, fmt.Errorf("npm directory is not set")
 	}
 
@@ -113,11 +90,14 @@ func (n *Npm) FullBuild(ctx context.Context, sonarConfig *SonarConfig, dockerCon
 			return nil, err
 		}
 		stages = append(stages,
-			PipelineStage{DisplayName: "Install Sonar Runtime", Command: []string{"apk", "add", "--no-cache", "openjdk17-jre"}},
-			PipelineStage{DisplayName: "SonarQube Analysis", Command: []string{"npx", "--yes", "sonar-scanner"}, Options: sonarOptions},
-		)
+			PipelineStage{
+				DisplayName: "Run SonarQube Analysis",
+				Command:     []string{"sonar-scanner"},
+				Options:     sonarOptions,
+				Image:       sonarConfig.Image,
+				Owner:       "scanner-cli",
+			})
 	}
-
 	result, err := n.executeStages(ctx, stages)
 	if err != nil {
 		return nil, err
@@ -153,7 +133,7 @@ func (n *Npm) executeStages(ctx context.Context, stages []PipelineStage) (*Build
 		result.Stdout = append(result.Stdout, stageResult.Stdout)
 		result.Stderr = append(result.Stderr, stageResult.Stderr)
 		result.ExecutedStages = append(result.ExecutedStages, stage.DisplayName)
-		result.Artifacts = stageResult.Artifacts
+		result.Artifacts = stageContainer.Directory(fmt.Sprintf("%s/%s", DefaultWorkdir, DefaultBuildDir))
 	}
 	result.Container = stageContainer
 	return result, nil
@@ -168,9 +148,21 @@ func (n *Npm) executeStage(ctx context.Context, container *dagger.Container, sta
 	if len(stage.Options) > 0 {
 		cmd = append(cmd, stage.Options...)
 	}
-
-	stageContainer := container.
-		WithDirectory(DefaultWorkdir, n.Dir, dagger.ContainerWithDirectoryOpts{Exclude: []string{"node_modules", "dist"}}).
+	var stageContainer *dagger.Container
+	var returnContainer *dagger.Container
+	containerOpts := dagger.ContainerWithDirectoryOpts{Exclude: []string{"node_modules", DefaultBuildDir}}
+	if stage.Owner != "" {
+		containerOpts.Owner = stage.Owner
+	}
+	// If the PipelineStage has its own image, use it, but, return the original image
+	if stage.Image != "" {
+		returnContainer = container
+		stageContainer = dag.Container().From(stage.Image)
+	} else {
+		stageContainer = container
+	}
+	stageContainer = stageContainer.
+		WithDirectory(DefaultWorkdir, n.Source, containerOpts).
 		WithWorkdir(DefaultWorkdir).
 		WithExec(cmd)
 
@@ -183,18 +175,21 @@ func (n *Npm) executeStage(ctx context.Context, container *dagger.Container, sta
 		stderr = ""
 	}
 
-	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/dist", DefaultWorkdir))
-
+	if returnContainer == nil {
+		returnContainer = stageContainer
+	}
+	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/", DefaultWorkdir, DefaultBuildDir))
 	return &StageResult{
-		Container: stageContainer,
-		Artifacts: artifactsDir,
+		Container: returnContainer,
 		Stdout:    stdout,
 		Stderr:    stderr,
+		Artifacts: artifactsDir,
 	}, nil
 }
 
 // buildSonarOptions converts the Sonar configuration into CLI arguments for the scanner.
 func (n *Npm) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]string, error) {
+	// TODO see: sonar.projectName and sonar.projectVersion
 	if config == nil {
 		return nil, nil
 	}
@@ -227,10 +222,10 @@ func (n *Npm) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]str
 }
 
 func (n *Npm) GetVersion(ctx context.Context) (string, error) {
-	if n.Dir == nil {
+	if n.Source == nil {
 		return "", fmt.Errorf("cannot get NPM version: npm directory is not set")
 	}
-	pkgJSON, err := n.Dir.File("package.json").Contents(ctx)
+	pkgJSON, err := n.Source.File("package.json").Contents(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to read package.json from directory: %w", err)
 	}
