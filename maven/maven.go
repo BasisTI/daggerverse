@@ -6,7 +6,6 @@ import (
 	"dagger/maven/internal/dagger"
 	"encoding/xml"
 	"fmt"
-	"strings"
 )
 
 // DefaultMavenCacheName identifies the cache volume used for the Maven local repository.
@@ -45,7 +44,7 @@ type Maven struct {
 }
 
 // DefaultMvnCiOptions lists the flags automatically added when UseDefaultCiOptions is enabled.
-var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true", "-DskipTests"}
+var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
 
 // New constructs a Maven helper ready to execute builds with the provided base options.
 func New(
@@ -167,21 +166,4 @@ func (m *Maven) readProject(ctx context.Context, pomFile *dagger.File) (*pomProj
 		return nil, fmt.Errorf("failed to parse pom.xml: %w", err)
 	}
 	return &project, nil
-}
-
-func uniqueNonEmpty(values []string) []string {
-	seen := make(map[string]struct{})
-	var result []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
 }

@@ -73,7 +73,9 @@ func (m *Maven) configureDockerPublish(
 	module string,
 	dockerConfig *DockerBuildConfig) (PipelineStage, string, error) {
 	moduleDockerConfig := *dockerConfig
+	// TODO Vamos ter que passar
 	moduleDockerConfig.Image = module
+	// TODO Vamos ter que passar o commitSha aqui
 	moduleDockerConfig.Tag = m.GetVersionOrDefault(ctx, source, "latest")
 	dockerOptions, err := m.buildDockerOptions(ctx, &moduleDockerConfig)
 	if err != nil {
@@ -164,6 +166,8 @@ func (m *Maven) buildDockerOptions(ctx context.Context, config *DockerBuildConfi
 
 	if imageURL != "" {
 		options = append(options, fmt.Sprintf("-Djib.to.image=%s", imageURL))
+		// Separar Tag
+		options = append(options, fmt.Sprintf("-Djib.to.tag=%s", config.Tag))
 	}
 
 	if config.Username != "" {
@@ -173,7 +177,7 @@ func (m *Maven) buildDockerOptions(ctx context.Context, config *DockerBuildConfi
 	if config.PasswordSecret != nil {
 		password, err := config.PasswordSecret.Plaintext(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("get jib password: %w", err)
+			return nil, fmt.Errorf("error getting registry password: %w", err)
 		}
 		options = append(options, fmt.Sprintf("-Djib.to.auth.password=%s", password))
 	}

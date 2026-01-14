@@ -34,13 +34,18 @@ type PipelineStage struct {
 
 // DockerBuildConfig contains the information required to execute the Jib Maven plugin and push images.
 type DockerBuildConfig struct {
-	Registry       string
-	Group          string
-	Image          string
+	// Remover
+	Registry string
+	// Remover
+	Group string
+	// Vai conter nome base sem tag: registry/group/name
+	Image string
+	// Pode ser um array de string
 	Tag            string
 	Username       string
 	PasswordSecret *dagger.Secret
 	Options        []string
+	Labels         map[string]string
 }
 
 // SonarConfig stores the data required to invoke SonarQube analysis for a module.
@@ -53,12 +58,13 @@ type SonarConfig struct {
 }
 
 // NewDockerBuildConfig creates a DockerBuildConfig tailored for Maven builds.
-func (m *Maven) NewDockerBuildConfig(registry, group, username string, passwordSecret *dagger.Secret) DockerBuildConfig {
+func (m *Maven) NewDockerBuildConfig(registry, group, username string, passwordSecret *dagger.Secret, options []string) DockerBuildConfig {
 	return DockerBuildConfig{
 		Registry:       registry,
 		Group:          group,
 		Username:       username,
 		PasswordSecret: passwordSecret,
+		Options:        options,
 	}
 }
 
