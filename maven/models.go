@@ -34,18 +34,22 @@ type PipelineStage struct {
 
 // DockerBuildConfig contains the information required to execute the Jib Maven plugin and push images.
 type DockerBuildConfig struct {
-	// Remover
-	Registry string
-	// Remover
-	Group string
-	// Vai conter nome base sem tag: registry/group/name
+	// Image contains the image name without tag, for instance: registry/group/name
 	Image string
-	// Pode ser um array de string
-	Tag            string
-	Username       string
+	// Tag image tag
+	Tag string
+	// Username to connect to a private registry
+	Username string
+	// Password for the user to connect to a private registry
 	PasswordSecret *dagger.Secret
-	Options        []string
-	Labels         map[string]string
+}
+
+func (r DockerBuildConfig) fullImageReference() string {
+	ref := r.Image
+	if r.Tag != "" {
+		ref = fmt.Sprintf("%s:%s", ref, r.Tag)
+	}
+	return ref
 }
 
 // SonarConfig stores the data required to invoke SonarQube analysis for a module.
@@ -58,13 +62,16 @@ type SonarConfig struct {
 }
 
 // NewDockerBuildConfig creates a DockerBuildConfig tailored for Maven builds.
-func (m *Maven) NewDockerBuildConfig(registry, group, username string, passwordSecret *dagger.Secret, options []string) DockerBuildConfig {
+func (m *Maven) NewDockerBuildConfig(
+	image string,
+	tag string,
+	username string,
+	passwordSecret *dagger.Secret) DockerBuildConfig {
 	return DockerBuildConfig{
-		Registry:       registry,
-		Group:          group,
+		Image:          image,
+		Tag:            tag,
 		Username:       username,
 		PasswordSecret: passwordSecret,
-		Options:        options,
 	}
 }
 
@@ -83,20 +90,3 @@ func (m *Maven) NewSonarConfig(host string, tokenSecret *dagger.Secret, waitForQ
 		ExtraOptions:       extraOptions,
 	}, nil
 }
-
-func (c *DockerBuildConfig) imageReference(defaultTag string) string {
-	ref := c.Registry
-	if c.Group != "" {
-		ref = fmt.Sprintf("%s/%s", ref, c.Group)
-	}
-	if c.Image != "" {
-		ref = fmt.Sprintf("%s/%s", ref, c.Image)
-	}
-	tag := c.Tag
-	if tag == "" {
-		tag = defaultTag
-	}
-	return fmt.Sprintf("%s:%s", ref, tag)
-}
-
-//type WithContainerFunc func(r *Container) *Container
