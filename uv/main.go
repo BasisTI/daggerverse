@@ -55,7 +55,9 @@ const (
 
 func (u *Uv) FullBuild(
 	ctx context.Context,
+	// +optional
 	sonarConfig *SonarConfig,
+	// +optional
 	dockerConfig *DockerBuildConfig) (*BuildResult, error) {
 
 	buildResult := BuildResult{}
