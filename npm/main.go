@@ -5,6 +5,7 @@ import (
 	"dagger/npm/internal/dagger"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 const DefaultNpmCacheName = "npm-cache"
@@ -75,6 +76,9 @@ func (n *Npm) GetAngularDistDir() *dagger.Directory {
 
 // FullBuild executes a typical npm pipeline: install dependencies, run tests, build assets, optional Sonar analysis, and image metadata preparation.
 func (n *Npm) FullBuild(ctx context.Context,
+	// Git commit SHA for image labels
+	// +optional
+	commitSha string,
 	// +optional
 	sonarConfig *SonarConfig,
 	// +optional
@@ -109,11 +113,16 @@ func (n *Npm) FullBuild(ctx context.Context,
 
 	if dockerConfig != nil {
 		version := n.GetVersionOrDefault(ctx, "latest")
+		created := time.Now().Format(time.RFC3339)
 		container := result.Container
 		container = container.From(n.RunImage).
-			WithLabel("version", version).
+			WithLabel("org.opencontainers.image.version", version).
+			WithLabel("org.opencontainers.image.created", created).
 			WithDirectory("/usr/share/nginx/html/", result.Artifacts).
 			WithRegistryAuth(dockerConfig.Registry, dockerConfig.Username, dockerConfig.PasswordSecret)
+		if commitSha != "" {
+			container = container.WithLabel("org.opencontainers.image.revision", commitSha)
+		}
 		publishedImage, err := container.Publish(ctx, dockerConfig.imageReference(version))
 		if err != nil {
 			return nil, err
