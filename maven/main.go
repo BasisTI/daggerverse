@@ -12,14 +12,14 @@ import (
 func (m *Maven) FullBuildModules(
 	ctx context.Context,
 	source *dagger.Directory,
-	// Digest do commit atual (sha completo)
+// Digest do commit atual (sha completo)
 	commitSha string,
-	// Versão da aplicação no formato CalVer.BuildNumber
+// Versão da aplicação no formato CalVer.BuildNumber
 	version string,
 	modules []string,
-	// +optional
+// +optional
 	sonarConfig *SonarConfig,
-	// +optional
+// +optional
 	dockerConfig *DockerBuildConfig) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
@@ -35,15 +35,15 @@ func (m *Maven) FullBuildModules(
 // FullBuild executes the three-stage pipeline (build/test, Sonar, Docker publish) for a single Maven module.
 func (m *Maven) FullBuild(ctx context.Context,
 	source *dagger.Directory,
-	// Module name
+// Module name
 	module string,
-	// Digest do commit atual (sha completo)
+// Digest do commit atual (sha completo)
 	commitSha string,
-	// Versão da aplicação no formato CalVer.BuildNumber
+// Versão da aplicação no formato CalVer.BuildNumber
 	version string,
-	// +optional
+// +optional
 	sonarConfig *SonarConfig,
-	// +optional
+// +optional
 	dockerConfig *DockerBuildConfig) (*ModuleBuildResult, error) {
 
 	stages := []PipelineStage{
@@ -87,9 +87,9 @@ func (m *Maven) FullBuild(ctx context.Context,
 func (m *Maven) configureDockerPublish(
 	ctx context.Context,
 	dockerConfig *DockerBuildConfig,
-	// Digest do commit atual (sha completo)
+// Digest do commit atual (sha completo)
 	commitSha string,
-	// Versão da aplicação no formato CalVer.BuildNumber
+// Versão da aplicação no formato CalVer.BuildNumber
 	version string) (PipelineStage, error) {
 	dockerOptions, err := m.buildDockerOptions(ctx, dockerConfig, commitSha, version)
 	if err != nil {
@@ -172,9 +172,9 @@ func (m *Maven) executeStage(
 func (m *Maven) buildDockerOptions(
 	ctx context.Context,
 	config *DockerBuildConfig,
-	// Digest do commit atual (sha completo)
+// Digest do commit atual (sha completo)
 	commitSha string,
-	// Versão da aplicação no formato CalVer.BuildNumber
+// Versão da aplicação no formato CalVer.BuildNumber
 	version string) ([]string, error) {
 	if config == nil {
 		return nil, nil
@@ -182,7 +182,7 @@ func (m *Maven) buildDockerOptions(
 	var options []string
 	options = append(options, fmt.Sprintf("-Djib.to.image=%s", config.Image))
 	if config.Tag != "" {
-		options = append(options, fmt.Sprintf("-Djib.to.tag=%s", config.Tag))
+		options = append(options, fmt.Sprintf("-Djib.to.tags=%s", config.Tag))
 	}
 	if config.Username != "" {
 		options = append(options, fmt.Sprintf("-Djib.to.auth.username=%s", config.Username))
