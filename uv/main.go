@@ -4,6 +4,7 @@ import (
 	"context"
 	"dagger/uv/internal/dagger"
 	"fmt"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -55,7 +56,12 @@ const (
 
 func (u *Uv) FullBuild(
 	ctx context.Context,
+	// Git commit SHA for image labels
+	// +optional
+	commitSha string,
+	// +optional
 	sonarConfig *SonarConfig,
+	// +optional
 	dockerConfig *DockerBuildConfig) (*BuildResult, error) {
 
 	buildResult := BuildResult{}
@@ -68,24 +74,30 @@ func (u *Uv) FullBuild(
 	buildDirectory := builder.Directory(WorkDir)
 	buildResult.Artifacts = buildDirectory
 	path := fmt.Sprintf("%s/%s", WorkDir, u.RunSubdir)
+	created := time.Now().Format(time.RFC3339)
 	appContainer := dag.Container().
 		From(u.RunImage).
+		WithLabel("org.opencontainers.image.version", pyProject.Project.Version).
+		WithLabel("org.opencontainers.image.created", created).
 		WithDirectory(WorkDir, buildDirectory).
 		WithWorkdir(path).
 		WithEnvVariable("PATH", "/app/.venv/bin:$PATH", dagger.ContainerWithEnvVariableOpts{Expand: true}).
 		WithEntrypoint([]string{"python", fmt.Sprintf("%s/%s", path, "main.py")})
+	if commitSha != "" {
+		appContainer = appContainer.WithLabel("org.opencontainers.image.revision", commitSha)
+	}
 	if sonarConfig != nil {
-		result, err := u.runSonarAnalysis(ctx, sonarConfig, buildDirectory, buildResult)
+		_, err := u.runSonarAnalysis(ctx, sonarConfig, buildDirectory, &buildResult)
 		if err != nil {
-			return result, err
+			return &buildResult, err
 		}
 	}
 
 	if dockerConfig != nil {
 		dockerConfig.Tag = pyProject.Project.Version
-		result, err := u.publishDockerImage(ctx, dockerConfig, appContainer, buildResult)
+		err := u.publishDockerImage(ctx, dockerConfig, appContainer, &buildResult)
 		if err != nil {
-			return result, err
+			return &buildResult, err
 		}
 	}
 
@@ -96,31 +108,31 @@ func (u *Uv) publishDockerImage(
 	ctx context.Context,
 	dockerConfig *DockerBuildConfig,
 	appContainer *dagger.Container,
-	buildResult BuildResult) (*BuildResult, error) {
+	buildResult *BuildResult) error {
 	publishedImage, err := appContainer.
 		WithRegistryAuth(dockerConfig.Registry, dockerConfig.Username, dockerConfig.PasswordSecret).
 		Publish(ctx, dockerConfig.imageReference("latest"))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	buildResult.ImageUrl = publishedImage
-	return nil, nil
+	return nil
 }
 
-func (u *Uv) runSonarAnalysis(ctx context.Context, sonarConfig *SonarConfig, buildDirectory *dagger.Directory, buildResult BuildResult) (*BuildResult, error) {
+func (u *Uv) runSonarAnalysis(ctx context.Context, sonarConfig *SonarConfig, buildDirectory *dagger.Directory, buildResult *BuildResult) (*BuildResult, error) {
 	sonarContainer, err := u.createSonarContainer(ctx, sonarConfig, buildDirectory)
 	if err != nil {
 		fmt.Println("Failed to create sonar container")
 	} else {
 		stdout, err := sonarContainer.Stdout(ctx)
 		if err != nil {
-			return nil, err
+			return buildResult, err
 		}
 		buildResult.Stdout = append(buildResult.Stdout, stdout)
 		stderr, _ := sonarContainer.Stderr(ctx)
 		buildResult.Stderr = append(buildResult.Stderr, stderr)
 	}
-	return nil, nil
+	return buildResult, nil
 }
 
 func (u *Uv) BuildContainer() *dagger.Container {
