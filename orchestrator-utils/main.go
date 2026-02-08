@@ -8,6 +8,7 @@ import (
 	"context"
 	"dagger/orchestrator-utils/internal/dagger"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -72,4 +73,176 @@ func (u *OrchestratorUtils) GetLastCommitSha(
 		WithExec([]string{"git", "log", "-n", "1", "--pretty=format:%H", "--", path}).
 		Stdout(ctx)
 	return strings.TrimSpace(out), err
+}
+
+// TagWithSha adiciona uma tag sha-{commitSha} a cada imagem publicada.
+// publishedImages contém uma imagem por linha no formato retornado por Publish
+// (ex: registry/path:tag@sha256:...).
+func (u *OrchestratorUtils) TagWithSha(
+	ctx context.Context,
+	// Imagens publicadas (uma por linha, formato: registry/path:tag@sha256:...)
+	publishedImages string,
+	// SHA completo do commit
+	commitSha string,
+	// Usuário para autenticação no registry.
+	registryUser string,
+	// Senha para autenticação no registry.
+	registryPass *dagger.Secret,
+) error {
+	lines := strings.Split(strings.TrimSpace(publishedImages), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Formato: registry/path:tag@sha256:digest
+		// Precisamos extrair registry/path (sem :tag) para montar a ref
+		// crane tag aceita a ref completa (com digest) e cria a nova tag
+		imageRef := line
+
+		// Extrair registry para auth: tudo antes do primeiro /
+		registry := strings.SplitN(imageRef, "/", 2)[0]
+
+		shaTag := "sha-" + commitSha
+
+		fmt.Printf("🏷️  Tagging %s as %s\n", imageRef, shaTag)
+
+		crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug").
+			WithSecretVariable("REGISTRY_PASS", registryPass).
+			WithExec([]string{"sh", "-c",
+				fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", registry, registryUser)}).
+			WithExec([]string{"crane", "tag", imageRef, shaTag})
+
+		_, err := crane.Sync(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to tag %s: %w", imageRef, err)
+		}
+	}
+	return nil
+}
+
+// CheckImages verifica se todas as imagens de um projeto existem no registry
+// usando a tag sha-{lastCommitSha} de cada subprojeto.
+//
+// projectImagesJson mapeia "caminho_imagem_no_registry" -> "path_no_repo".
+// Ex: {"licitacao/admin_backend":"admin_backend"}
+func (u *OrchestratorUtils) CheckImages(
+	ctx context.Context,
+	// Diretório raiz do repositório Git.
+	source *dagger.Directory,
+	// JSON {"imagem_no_registry":"repo_path"}
+	projectImagesJson string,
+	// URL do registry Docker.
+	registry string,
+	// Usuário para autenticação no registry.
+	// +optional
+	registryUser string,
+	// Senha para autenticação no registry.
+	// +optional
+	registryPass *dagger.Secret,
+) error {
+	var projectImages map[string]string
+	if err := json.Unmarshal([]byte(projectImagesJson), &projectImages); err != nil {
+		return fmt.Errorf("failed to parse projectImagesJson: %w", err)
+	}
+
+	crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug")
+	if registryUser != "" && registryPass != nil {
+		crane = crane.
+			WithSecretVariable("REGISTRY_PASS", registryPass).
+			WithExec([]string{"sh", "-c",
+				fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", registry, registryUser)})
+	}
+
+	var missing []string
+	for imagePath, repoPath := range projectImages {
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath)
+		if err != nil {
+			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
+		}
+
+		tag := fmt.Sprintf("%s/%s:sha-%s", registry, imagePath, lastSha)
+		fmt.Printf("🔎 Verificando existência: %s\n", tag)
+
+		_, err = crane.WithExec([]string{"crane", "manifest", tag}).Sync(ctx)
+		if err != nil {
+			fmt.Printf("❌ Faltante: %s\n", tag)
+			missing = append(missing, imagePath)
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("imagens não encontradas para: %v — verifique a pipeline de develop", missing)
+	}
+	return nil
+}
+
+// Promote promove imagens de um registry de staging para production,
+// relendo a versão original do label OCI e fazendo crane copy.
+//
+// projectImagesJson mapeia "caminho_imagem_no_registry" -> "path_no_repo".
+func (u *OrchestratorUtils) Promote(
+	ctx context.Context,
+	// Diretório raiz do repositório Git.
+	source *dagger.Directory,
+	// JSON {"imagem_no_registry":"repo_path"}
+	projectImagesJson string,
+	// Registry de origem (staging).
+	srcRegistry string,
+	// Registry de destino (production). Se vazio, usa srcRegistry.
+	// +optional
+	dstRegistry string,
+	// Usuário para autenticação nos registries.
+	registryUser string,
+	// Senha para autenticação nos registries.
+	registryPass *dagger.Secret,
+) error {
+	if dstRegistry == "" {
+		dstRegistry = srcRegistry
+	}
+
+	var projectImages map[string]string
+	if err := json.Unmarshal([]byte(projectImagesJson), &projectImages); err != nil {
+		return fmt.Errorf("failed to parse projectImagesJson: %w", err)
+	}
+
+	crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug").
+		WithSecretVariable("REGISTRY_PASS", registryPass).
+		WithExec([]string{"sh", "-c",
+			fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", srcRegistry, registryUser)})
+
+	if dstRegistry != srcRegistry {
+		crane = crane.WithExec([]string{"sh", "-c",
+			fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", dstRegistry, registryUser)})
+	}
+
+	for imagePath, repoPath := range projectImages {
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath)
+		if err != nil {
+			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
+		}
+
+		srcImageRef := fmt.Sprintf("%s/%s:sha-%s", srcRegistry, imagePath, lastSha)
+
+		fmt.Printf("🔍 Inspecionando imagem: %s\n", srcImageRef)
+
+		// Lê label de versão da imagem
+		originalVersion, err := dag.Container().From(srcImageRef).Label(ctx, "org.opencontainers.image.version")
+		if err != nil || originalVersion == "" {
+			fmt.Printf("⚠️  Skipping %s: Label de versão não encontrado\n", imagePath)
+			continue
+		}
+
+		dstImageRef := fmt.Sprintf("%s/%s:%s", dstRegistry, imagePath, originalVersion)
+
+		fmt.Printf("📦 Promovendo: %s -> %s\n", srcImageRef, dstImageRef)
+
+		_, err = crane.WithExec([]string{"crane", "copy", srcImageRef, dstImageRef}).Sync(ctx)
+		if err != nil {
+			return fmt.Errorf("falha na promoção de %s: %w", imagePath, err)
+		}
+	}
+	return nil
 }
