@@ -1,10 +1,11 @@
-module dagger/npm
+module dagger/uv
 
-go 1.24.3
+go 1.25.1
 
 require (
 	github.com/99designs/gqlgen v0.17.81
 	github.com/Khan/genqlient v0.8.1
+	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/vektah/gqlparser/v2 v2.5.30
 	go.opentelemetry.io/otel v1.38.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.14.0

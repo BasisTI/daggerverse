@@ -1,109 +1,201 @@
-// Dagger module to build maven Projects
+// Dagger module to build Maven projects.
 package main
 
 import (
 	"context"
 	"dagger/maven/internal/dagger"
 	"fmt"
+	"time"
 )
 
-var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
-
-// Maven Module
-type Maven struct {
-	// image for executing Builds
-	Image string
-	// Use Maven Wrapper
-	UseMvnw bool
-	// Use Cache for Maven repository
-	UseCache bool
-	// Use default maven parameters for CI builds
-	UseDefaultCiOptions bool
-	Dir                 *dagger.Directory
-	MavenContainer      *dagger.Container
-}
-
-// New creates a new Maven Module
-func New(
-// Directory for maven goals execution
-// +optional
-	source *dagger.Directory,
-// image for executing Builds
-// +default="maven:3.9.9-eclipse-temurin-21-alpine"
-	buildImage string,
-// Use Maven Wrapper
-// +default=false
-	useMvnw bool,
-// Use Cache for Maven repository (true recommended)
-// +default=true
-	useCache bool,
-// Use default maven parameters for CI builds
-// +default=true
-	useDefaultCiOptions bool) *Maven {
-	return &Maven{
-		Image:               buildImage,
-		UseMvnw:             useMvnw,
-		UseCache:            useCache,
-		UseDefaultCiOptions: useDefaultCiOptions,
-		Dir:                 source,
-	}
-}
-
-// MvnVerify runs mvn verify goal to build the application and run UT and IT
-func (m *Maven) MvnVerify(cleanFirst bool) *dagger.Directory {
-	var args []string
-	if cleanFirst {
-		args = append(args, "clean")
-	}
-	args = append(args, "verify")
-	return m.MavenBuild(args).GetBuildDir()
-}
-
-// PublishWithJib runs JIB through mvn jib:build to build and publish a Docker Image
-func (m *Maven) PublishWithJib(ctx context.Context,
-	registry string,
-	image string,
-	username string,
-	password *dagger.Secret) (*Maven, error) {
-	plaintextPwd, err := password.Plaintext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return m.MavenBuild([]string{"jib:build",
-		fmt.Sprintf("-Djib.to.image=%s/%s", registry, image),
-		fmt.Sprintf("-Djib.to.auth.username=%s", username),
-		fmt.Sprintf("-Djib.to.auth.password=%s", plaintextPwd)}), nil
-}
-
-// MvnVerifyPublishWithJib runs mvn clean verify to build the application then publish the imagem with Jib
-func (m *Maven) MvnVerifyPublishWithJib(
+// FullBuildModules orchestrates build, test, Sonar analysis, and image publishing for each module in order.
+func (m *Maven) FullBuildModules(
 	ctx context.Context,
-// Docker registry for image publishing
-	registry string,
-// Image name with tag (can contain groups, i.e.: a/b/c:1.0)
-	image string,
-// Username for login to the registry
-	username string,
-// Password for login to the registry
-	password *dagger.Secret) (*dagger.Directory, error) {
-	_, err := m.MvnVerify(true).Entries(ctx)
-	if err != nil {
-		return nil, err
+	source *dagger.Directory,
+	// Digest do commit atual (sha completo)
+	commitSha string,
+	// Versão da aplicação no formato CalVer.BuildNumber
+	version string,
+	modules []string,
+	// +optional
+	sonarConfig *SonarConfig,
+	// +optional
+	dockerConfig *DockerBuildConfig) ([]*ModuleBuildResult, error) {
+	results := make([]*ModuleBuildResult, 0)
+	for _, module := range modules {
+		result, err := m.FullBuild(ctx, source, module, commitSha, version, sonarConfig, dockerConfig)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
 	}
-	_, err = m.PublishWithJib(ctx, registry, image, username, password)
-	if err != nil {
-		return nil, err
-	}
-	return m.GetBuildDir(), nil
+	return results, nil
 }
 
-// Run Sonar Analysis using Sonar Maven Plugin
-func (m *Maven) MvnSonarAnalysis(ctx context.Context, sonarHostUrl string, token *dagger.Secret) (*Maven, error) {
-	plaintextToken, err := token.Plaintext(ctx)
+// FullBuild executes the three-stage pipeline (build/test, Sonar, Docker publish) for a single Maven module.
+func (m *Maven) FullBuild(ctx context.Context,
+	source *dagger.Directory,
+	// Module name
+	module string,
+	// Digest do commit atual (sha completo)
+	commitSha string,
+	// Versão da aplicação no formato CalVer.BuildNumber
+	version string,
+	// +optional
+	sonarConfig *SonarConfig,
+	// +optional
+	dockerConfig *DockerBuildConfig) (*ModuleBuildResult, error) {
+
+	stages := []PipelineStage{
+		{
+			DisplayName: "Set version",
+			Goals:       []string{"versions:set"},
+			Options:     []string{"-DnewVersion=" + version, "-DgenerateBackupPoms=false"},
+		},
+		{
+			DisplayName: "Build and Test",
+			Goals:       []string{"clean", "verify"},
+		},
+	}
+
+	if sonarConfig != nil {
+		sonarStage, err := m.configureSonar(ctx, sonarConfig, module)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, sonarStage)
+	}
+
+	imageUrl := ""
+	if dockerConfig != nil {
+		dockerStage, err := m.configureDockerPublish(ctx, dockerConfig, commitSha, version)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, dockerStage)
+		imageUrl = dockerConfig.fullImageReference()
+	}
+
+	buildResult, err := m.executeStages(ctx, source, module, stages)
 	if err != nil {
 		return nil, err
 	}
-	return m.MavenBuild([]string{"org.sonarsource.scanner.maven:sonar-maven-plugin:sonar",
-		fmt.Sprintf("-Dsonar.token=%s", plaintextToken),
-		fmt.Sprintf("-Dsonar.host.url=%s", sonarHostUrl)}), nil
+	buildResult.ImageUrl = imageUrl
+	return buildResult, nil
+}
+
+func (m *Maven) configureDockerPublish(
+	ctx context.Context,
+	dockerConfig *DockerBuildConfig,
+	// Digest do commit atual (sha completo)
+	commitSha string,
+	// Versão da aplicação no formato CalVer.BuildNumber
+	version string) (PipelineStage, error) {
+	dockerOptions, err := m.buildDockerOptions(ctx, dockerConfig, commitSha, version)
+	if err != nil {
+		return PipelineStage{}, err
+	}
+	return PipelineStage{
+		DisplayName: "Docker Build and Push",
+		Goals:       []string{"jib:build"},
+		Options:     dockerOptions,
+	}, nil
+}
+
+func (m *Maven) configureSonar(ctx context.Context, sonarConfig *SonarConfig, module string) (PipelineStage, error) {
+	moduleSonarConfig := *sonarConfig
+	moduleSonarConfig.ProjectKey = module
+	sonarOptions, err := m.buildSonarOptions(ctx, &moduleSonarConfig)
+	if err != nil {
+		return PipelineStage{}, err
+	}
+	return PipelineStage{
+		DisplayName: "SonarQube Analysis",
+		Goals:       []string{"sonar:sonar"},
+		Options:     sonarOptions,
+	}, nil
+}
+
+// executeStages runs the provided pipeline stages sequentially using a shared container.
+func (m *Maven) executeStages(
+	ctx context.Context,
+	source *dagger.Directory,
+	module string,
+	stages []PipelineStage) (*ModuleBuildResult, error) {
+	stageContainer := m.Container()
+	result := &ModuleBuildResult{}
+	for _, stage := range stages {
+		buildResultStage, err := m.executeStage(ctx, source, module, stage, stageContainer)
+		if err != nil {
+			return nil, err
+		}
+		stageContainer = buildResultStage.Container
+		result.Stdout = append(result.Stdout, buildResultStage.Stdout)
+		result.Stderr = append(result.Stderr, buildResultStage.Stderr)
+		result.ExecutedStages = append(result.ExecutedStages, stage.DisplayName)
+		result.Artifacts = buildResultStage.Artifacts
+	}
+	return result, nil
+}
+
+// executeStage mounts the module source, runs the Maven goals for a stage, and captures outputs.
+func (m *Maven) executeStage(
+	ctx context.Context,
+	source *dagger.Directory,
+	module string,
+	stage PipelineStage,
+	stageContainer *dagger.Container) (*StageBuildResult, error) {
+	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)
+	stageContainer = stageContainer.
+		WithDirectory(moduleDir, source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"target"}}).
+		WithWorkdir(moduleDir).
+		WithExec(m.getFullMvnModuleCommand(stage.Options, stage.Goals))
+	stdout, err := stageContainer.Stdout(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdout: %w", err)
+	}
+	stderr, err := stageContainer.Stderr(ctx)
+	if err != nil {
+		// Non-fatal, stderr might be empty
+		stderr = ""
+	}
+	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/target", moduleDir))
+	return &StageBuildResult{
+		Container: stageContainer,
+		Artifacts: artifactsDir,
+		Stdout:    stdout,
+		Stderr:    stderr,
+	}, nil
+}
+
+// buildDockerOptions materializes the Maven command-line arguments needed to run the Jib plugin.
+func (m *Maven) buildDockerOptions(
+	ctx context.Context,
+	config *DockerBuildConfig,
+	// Digest do commit atual (sha completo)
+	commitSha string,
+	// Versão da aplicação no formato CalVer.BuildNumber
+	version string) ([]string, error) {
+	if config == nil {
+		return nil, nil
+	}
+	var options []string
+	options = append(options, fmt.Sprintf("-Djib.to.image=%s", config.Image))
+	if config.Tag != "" {
+		options = append(options, fmt.Sprintf("-Djib.to.tag=%s", config.Tag))
+	}
+	if config.Username != "" {
+		options = append(options, fmt.Sprintf("-Djib.to.auth.username=%s", config.Username))
+	}
+	if config.PasswordSecret != nil {
+		password, err := config.PasswordSecret.Plaintext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("error getting registry password: %w", err)
+		}
+		options = append(options, fmt.Sprintf("-Djib.to.auth.password=%s", password))
+	}
+	created := time.Now().Format(time.RFC3339)
+	options = append(options, fmt.Sprintf("-Djib.container.labels=org.opencontainers.image.revision=%s,"+
+		"org.opencontainers.image.version=%s,org.opencontainers.image.created=%s", commitSha, version, created))
+	return options, nil
 }
