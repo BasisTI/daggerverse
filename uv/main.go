@@ -29,13 +29,13 @@ type Uv struct {
 
 func New(
 	source *dagger.Directory,
-// +default="ghcr.io/astral-sh/uv:0.8.19-python3.12-bookworm-slim"
+	// +default="ghcr.io/astral-sh/uv:0.8.19-python3.12-bookworm-slim"
 	buildImage string,
-// +default="python:3.12-slim-bookworm"
+	// +default="python:3.12-slim-bookworm"
 	runImage string,
-// +optional
+	// +optional
 	runSubdir string,
-// +default=true
+	// +default=true
 	useCache bool) *Uv {
 	return &Uv{
 		BuildImage: buildImage,
