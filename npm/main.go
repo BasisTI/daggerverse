@@ -79,6 +79,9 @@ func (n *Npm) FullBuild(ctx context.Context,
 	// Git commit SHA for image labels
 	// +optional
 	commitSha string,
+	// Application version for image tag. When empty, falls back to package.json version.
+	// +optional
+	version string,
 	// +optional
 	sonarConfig *SonarConfig,
 	// +optional
@@ -112,7 +115,9 @@ func (n *Npm) FullBuild(ctx context.Context,
 	}
 
 	if dockerConfig != nil {
-		version := n.GetVersionOrDefault(ctx, "latest")
+		if version == "" {
+			version = n.GetVersionOrDefault(ctx, "latest")
+		}
 		created := time.Now().Format(time.RFC3339)
 		container := result.Container
 		container = container.From(n.RunImage).
