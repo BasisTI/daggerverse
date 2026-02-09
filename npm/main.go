@@ -90,6 +90,15 @@ func (n *Npm) FullBuild(ctx context.Context,
 		return nil, fmt.Errorf("source is nil")
 	}
 
+	if version != "" {
+		updated, err := n.withPackageJsonVersion(ctx, version)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set version in package.json: %w", err)
+		}
+		n.Source = updated
+		n.NodeContainer = nil
+	}
+
 	stages := []PipelineStage{
 		{DisplayName: "Install Dependencies", Command: []string{"npm", "ci"}},
 		{DisplayName: "Build Production Bundle", Command: []string{"npm", "run", "build"}},
@@ -237,6 +246,25 @@ func (n *Npm) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]str
 	}
 
 	return options, nil
+}
+
+// withPackageJsonVersion reads package.json, replaces the version field and returns the updated source directory.
+func (n *Npm) withPackageJsonVersion(ctx context.Context, version string) (*dagger.Directory, error) {
+	contents, err := n.Source.File("package.json").Contents(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read package.json: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(contents), &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse package.json: %w", err)
+	}
+	versionJSON, _ := json.Marshal(version)
+	raw["version"] = versionJSON
+	updated, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize package.json: %w", err)
+	}
+	return n.Source.WithNewFile("package.json", string(updated)+"\n"), nil
 }
 
 func (n *Npm) GetVersion(ctx context.Context) (string, error) {
