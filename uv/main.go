@@ -59,6 +59,9 @@ func (u *Uv) FullBuild(
 	// Git commit SHA for image labels
 	// +optional
 	commitSha string,
+	// Application version for image tag. When empty, falls back to pyproject.toml version.
+	// +optional
+	version string,
 	// +optional
 	sonarConfig *SonarConfig,
 	// +optional
@@ -66,9 +69,12 @@ func (u *Uv) FullBuild(
 
 	buildResult := BuildResult{}
 
-	pyProject, err := GetPythonVersion(ctx, u.Source)
-	if err != nil {
-		return nil, err
+	if version == "" {
+		pyProject, err := GetPythonVersion(ctx, u.Source)
+		if err != nil {
+			return nil, err
+		}
+		version = pyProject.Project.Version
 	}
 	builder := u.BuildContainer()
 	buildDirectory := builder.Directory(WorkDir)
@@ -77,7 +83,7 @@ func (u *Uv) FullBuild(
 	created := time.Now().Format(time.RFC3339)
 	appContainer := dag.Container().
 		From(u.RunImage).
-		WithLabel("org.opencontainers.image.version", pyProject.Project.Version).
+		WithLabel("org.opencontainers.image.version", version).
 		WithLabel("org.opencontainers.image.created", created).
 		WithDirectory(WorkDir, buildDirectory).
 		WithWorkdir(path).
@@ -94,7 +100,7 @@ func (u *Uv) FullBuild(
 	}
 
 	if dockerConfig != nil {
-		dockerConfig.Tag = pyProject.Project.Version
+		dockerConfig.Tag = version
 		err := u.publishDockerImage(ctx, dockerConfig, appContainer, &buildResult)
 		if err != nil {
 			return &buildResult, err
