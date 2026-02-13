@@ -4,5 +4,6 @@
   "sdk": {
     "source": "go"
   },
-  "disableDefaultFunctionCaching": true
+  "disableDefaultFunctionCaching": true,
+  "root": ".."
 }

@@ -2,6 +2,8 @@ module dagger/npm
 
 go 1.24.3
 
+require github.com/BasisTI/daggerverse/gitlabci v0.0.0
+
 require (
 	github.com/Khan/genqlient v0.8.1
 	github.com/vektah/gqlparser/v2 v2.5.30
@@ -52,3 +54,5 @@ replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp => go.opente
 replace go.opentelemetry.io/otel/log => go.opentelemetry.io/otel/log v0.14.0
 
 replace go.opentelemetry.io/otel/sdk/log => go.opentelemetry.io/otel/sdk/log v0.14.0
+
+replace github.com/BasisTI/daggerverse/gitlabci => ../gitlabci

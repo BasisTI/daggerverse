@@ -6,6 +6,8 @@ import (
 	"dagger/maven/internal/dagger"
 	"fmt"
 	"time"
+
+	"github.com/BasisTI/daggerverse/gitlabci"
 )
 
 // FullBuildModules orchestrates build, test, Sonar analysis, and image publishing for each module in order.
@@ -20,10 +22,14 @@ func (m *Maven) FullBuildModules(
 // +optional
 	sonarConfig *SonarConfig,
 // +optional
-	dockerConfig *DockerBuildConfig) ([]*ModuleBuildResult, error) {
+	dockerConfig *DockerBuildConfig,
+// Emitir marcadores de seção do GitLab CI no log
+// +default=false
+	useGitlabSections bool,
+) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
-		result, err := m.FullBuild(ctx, source, module, commitSha, version, sonarConfig, dockerConfig)
+		result, err := m.FullBuild(ctx, source, module, commitSha, version, sonarConfig, dockerConfig, useGitlabSections)
 		if err != nil {
 			return nil, err
 		}
@@ -44,7 +50,11 @@ func (m *Maven) FullBuild(ctx context.Context,
 // +optional
 	sonarConfig *SonarConfig,
 // +optional
-	dockerConfig *DockerBuildConfig) (*ModuleBuildResult, error) {
+	dockerConfig *DockerBuildConfig,
+// Emitir marcadores de seção do GitLab CI no log
+// +default=false
+	useGitlabSections bool,
+) (*ModuleBuildResult, error) {
 
 	stages := []PipelineStage{
 		{
@@ -76,7 +86,7 @@ func (m *Maven) FullBuild(ctx context.Context,
 		imageUrl = dockerConfig.fullImageReference()
 	}
 
-	buildResult, err := m.executeStages(ctx, source, module, stages)
+	buildResult, err := m.executeStages(ctx, source, module, stages, useGitlabSections)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +131,21 @@ func (m *Maven) executeStages(
 	ctx context.Context,
 	source *dagger.Directory,
 	module string,
-	stages []PipelineStage) (*ModuleBuildResult, error) {
+	stages []PipelineStage,
+	useGitlabSections bool,
+) (*ModuleBuildResult, error) {
 	stageContainer := m.Container()
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
+		sectionID := ""
+		if useGitlabSections {
+			sectionID = gitlabci.SanitizeID(module, stage.DisplayName)
+			gitlabci.SectionStart(sectionID, fmt.Sprintf("%s: %s", module, stage.DisplayName))
+		}
 		buildResultStage, err := m.executeStage(ctx, source, module, stage, stageContainer)
+		if sectionID != "" {
+			gitlabci.SectionEnd(sectionID)
+		}
 		if err != nil {
 			return nil, err
 		}
