@@ -23,13 +23,13 @@ func (m *Maven) FullBuildModules(
 	sonarConfig *SonarConfig,
 // +optional
 	dockerConfig *DockerBuildConfig,
-// Emitir marcadores de seção do GitLab CI no log
-// +default=false
-	useGitlabSections bool,
+// GitLab configuration for reporting commit statuses
+// +optional
+	gitlabConfig *GitLabConfig,
 ) ([]*ModuleBuildResult, error) {
 	results := make([]*ModuleBuildResult, 0)
 	for _, module := range modules {
-		result, err := m.FullBuild(ctx, source, module, commitSha, version, sonarConfig, dockerConfig, useGitlabSections)
+		result, err := m.FullBuild(ctx, source, module, commitSha, version, sonarConfig, dockerConfig, gitlabConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -51,9 +51,9 @@ func (m *Maven) FullBuild(ctx context.Context,
 	sonarConfig *SonarConfig,
 // +optional
 	dockerConfig *DockerBuildConfig,
-// Emitir marcadores de seção do GitLab CI no log
-// +default=false
-	useGitlabSections bool,
+// GitLab configuration for reporting commit statuses
+// +optional
+	gitlabConfig *GitLabConfig,
 ) (*ModuleBuildResult, error) {
 
 	stages := []PipelineStage{
@@ -86,7 +86,20 @@ func (m *Maven) FullBuild(ctx context.Context,
 		imageUrl = dockerConfig.fullImageReference()
 	}
 
-	buildResult, err := m.executeStages(ctx, source, module, stages, useGitlabSections)
+	var gitlabClient *gitlabci.Client
+	if gitlabConfig != nil {
+		token, err := gitlabConfig.TokenSecret.Plaintext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get gitlab token: %w", err)
+		}
+		gitlabClient = &gitlabci.Client{
+			BaseURL:   gitlabConfig.Host,
+			Token:     token,
+			ProjectID: gitlabConfig.ProjectID,
+		}
+	}
+
+	buildResult, err := m.executeStages(ctx, source, module, stages, gitlabClient, commitSha)
 	if err != nil {
 		return nil, err
 	}
@@ -132,19 +145,24 @@ func (m *Maven) executeStages(
 	source *dagger.Directory,
 	module string,
 	stages []PipelineStage,
-	useGitlabSections bool,
+	gitlabClient *gitlabci.Client,
+	commitSha string,
 ) (*ModuleBuildResult, error) {
 	stageContainer := m.Container()
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
-		sectionID := ""
-		if useGitlabSections {
-			sectionID = gitlabci.SanitizeID(module, stage.DisplayName)
-			gitlabci.SectionStart(sectionID, fmt.Sprintf("%s: %s", module, stage.DisplayName))
+		statusName := ""
+		if gitlabClient != nil {
+			statusName = fmt.Sprintf("%s: %s", module, stage.DisplayName)
+			_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
 		}
 		buildResultStage, err := m.executeStage(ctx, source, module, stage, stageContainer)
-		if sectionID != "" {
-			gitlabci.SectionEnd(sectionID)
+		if statusName != "" {
+			if err != nil {
+				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
+			} else {
+				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateSuccess, statusName, "")
+			}
 		}
 		if err != nil {
 			return nil, err

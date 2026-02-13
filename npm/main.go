@@ -102,9 +102,9 @@ func (n *Npm) FullBuild(ctx context.Context,
 	sonarConfig *SonarConfig,
 	// +optional
 	dockerConfig *DockerBuildConfig,
-	// Emitir marcadores de seção do GitLab CI no log
-	// +default=false
-	useGitlabSections bool,
+	// GitLab configuration for reporting commit statuses
+	// +optional
+	gitlabConfig *GitLabConfig,
 ) (*BuildResult, error) {
 	if n.Source == nil {
 		return nil, fmt.Errorf("source is nil")
@@ -138,7 +138,20 @@ func (n *Npm) FullBuild(ctx context.Context,
 				Owner:       "scanner-cli",
 			})
 	}
-	result, err := n.executeStages(ctx, stages, useGitlabSections)
+	var gitlabClient *gitlabci.Client
+	if gitlabConfig != nil {
+		token, err := gitlabConfig.TokenSecret.Plaintext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get gitlab token: %w", err)
+		}
+		gitlabClient = &gitlabci.Client{
+			BaseURL:   gitlabConfig.Host,
+			Token:     token,
+			ProjectID: gitlabConfig.ProjectID,
+		}
+	}
+
+	result, err := n.executeStages(ctx, stages, gitlabClient, commitSha)
 	if err != nil {
 		return nil, err
 	}
@@ -168,22 +181,26 @@ func (n *Npm) FullBuild(ctx context.Context,
 }
 
 // executeStages runs each pipeline stage sequentially while collecting logs and artifacts.
-func (n *Npm) executeStages(ctx context.Context, stages []PipelineStage, useGitlabSections bool) (*BuildResult, error) {
-	var sectionPrefix string
-	if useGitlabSections {
-		sectionPrefix = n.getProjectName(ctx)
+func (n *Npm) executeStages(ctx context.Context, stages []PipelineStage, gitlabClient *gitlabci.Client, commitSha string) (*BuildResult, error) {
+	var statusPrefix string
+	if gitlabClient != nil {
+		statusPrefix = n.getProjectName(ctx)
 	}
 	stageContainer := n.Container()
 	result := &BuildResult{}
 	for _, stage := range stages {
-		sectionID := ""
-		if sectionPrefix != "" {
-			sectionID = gitlabci.SanitizeID(sectionPrefix, stage.DisplayName)
-			gitlabci.SectionStart(sectionID, fmt.Sprintf("%s: %s", sectionPrefix, stage.DisplayName))
+		statusName := ""
+		if statusPrefix != "" {
+			statusName = fmt.Sprintf("%s: %s", statusPrefix, stage.DisplayName)
+			_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
 		}
 		stageResult, err := n.executeStage(ctx, stageContainer, stage)
-		if sectionID != "" {
-			gitlabci.SectionEnd(sectionID)
+		if statusName != "" {
+			if err != nil {
+				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
+			} else {
+				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateSuccess, statusName, "")
+			}
 		}
 		if err != nil {
 			return nil, err
