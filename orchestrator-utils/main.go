@@ -179,6 +179,38 @@ func (u *OrchestratorUtils) CheckImages(
 	return nil
 }
 
+// GitLabConfig stores the data needed to report commit statuses to GitLab.
+type GitLabConfig struct {
+	Host        string         // URL base (ex: "https://gitlab.com")
+	TokenSecret *dagger.Secret // Token com scope `api`
+	ProjectID   string         // ID numérico ou path URL-encoded
+}
+
+// NewGitLabConfig validates the provided inputs and returns a GitLab configuration for commit statuses.
+func (u *OrchestratorUtils) NewGitLabConfig(
+	// URL base do GitLab (ex: "https://gitlab.com").
+	host string,
+	// Token com scope `api` para autenticação.
+	tokenSecret *dagger.Secret,
+	// ID numérico ou path URL-encoded do projeto.
+	projectID string,
+) (*GitLabConfig, error) {
+	if host == "" {
+		return nil, fmt.Errorf("host is empty")
+	}
+	if tokenSecret == nil {
+		return nil, fmt.Errorf("token secret is empty")
+	}
+	if projectID == "" {
+		return nil, fmt.Errorf("project ID is empty")
+	}
+	return &GitLabConfig{
+		Host:        host,
+		TokenSecret: tokenSecret,
+		ProjectID:   projectID,
+	}, nil
+}
+
 // Promote promove imagens de um registry de staging para production,
 // relendo a versão original do label OCI e fazendo crane copy.
 //

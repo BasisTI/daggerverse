@@ -1,5 +1,78 @@
-= Dagger modules for Basis' CI builds
+= Daggerverse
 
-== Maven
+Dagger modules and Go libraries for Basis CI/CD pipelines. Each module encapsulates a build technology (Maven, npm, uv) while shared libraries provide GitLab integration and pipeline orchestration.
 
-== Frontend NPM
+== Modules
+
+=== orchestrator-utils
+
+Git and container-registry utilities used by project orchestrators.Provides change detection between branches, commit SHA lookup, image tagging with `sha-+{commit}+`, image existence checks, and cross-registry promotion.
+
+All Git operations run inside an `alpine/git` container; image operations use https://github.com/google/go-containerregistry/tree/main/cmd/crane[crane].
+
+=== npm
+
+Dagger module for Node.js/npm projects (Angular). Runs `npm ci`, `npm run build`, optional SonarQube analysis, and publishes the `dist/` output into an nginx container. Supports version override via `package.json` patching and GitLab commit status reporting.
+
+=== maven
+
+Dagger module for Maven projects. Handles version setting (`versions:set`), build and test (`clean verify`), SonarQube analysis (`sonar:sonar`), and Docker image publishing via the Jib plugin. Supports Maven Wrapper, parent POM installation, multi-module builds, and GitLab commit status reporting.
+
+=== uv
+
+Dagger module for Python projects using https://github.com/astral-sh/uv[uv]. Performs two-stage dependency sync (`uv sync`), optional SonarQube analysis, and publishes a slim Python runtime image. Supports build customizations for dlt and dbt projects.
+
+== GitLab Integration
+
+The `gitlabci/` directory is a standalone Go library (imported as `github.com/BasisTI/daggerverse/gitlabci`) that provides GitLab CI helpers.
+
+=== Commit Statuses
+
+The `gitlabci.Client` reports pipeline stage progress as commit statuses visible in the GitLab MR/commit UI. It calls `POST /api/v4/projects/:id/statuses/:sha` to transition each stage through `running` -&gt; `success` or `failed`.
+
+[source,go]
+----
+client := &gitlabci.Client{
+    BaseURL:   "https://gitlab.example.com",
+    Token:     "glpat-...",
+    ProjectID: "12345",
+}
+
+client.SetCommitStatus(sha, gitlabci.StateRunning, "my-app: Build", "")
+// ... run stage ...
+client.SetCommitStatus(sha, gitlabci.StateSuccess, "my-app: Build", "")
+----
+
+=== Usage in npm and maven
+
+Both modules accept an optional `GitLabConfig` in their `FullBuild` functions. When provided, each pipeline stage is reported as an individual commit status:
+
+----
+dagger call full-build \
+  --source . \
+  --commit-sha "$CI_COMMIT_SHA" \
+  --version "1.0.0" \
+  --gitlab-config host="https://gitlab.example.com",token-secret=env:GITLAB_TOKEN,project-id="$CI_PROJECT_ID"
+----
+
+The status names follow the pattern `"{project}: {stage}"`, for example:
+
+* `portal-web: Install Dependencies`
+* `portal-web: Build Production Bundle`
+* `api-gateway: Build and Test`
+* `api-gateway: Docker Build and Push`
+
+When `gitlabConfig` is not provided, the modules behave exactly the same but without reporting statuses.
+
+== Pipeline Library
+
+The `pipeline/` directory is a Go library that provides generic, type-safe pipeline orchestration for multi-project repositories.
+
+It uses Go generics to abstract over Dagger SDK types, allowing different orchestrators to share the same build logic even when they depend on different SDK versions.
+
+=== Core concepts
+
+* *`BuildStrategy[Dir, Secret]`* / *`QualityStrategy[Dir, Secret]`* – function signatures that any module can implement to plug into the orchestration.
+* *`DaggerOps[Dir, Secret]`* – a set of callbacks that isolate SDK-specific operations (change detection, directory access, image tagging).
+* *`PublishAll`* – detects changed projects, runs their build strategies sequentially, aggregates published image refs, and tags them with `sha-{commit}`.
+* *`CheckQuality`* – runs tests and static analysis on changed projects, with optional fail-fast behavior.

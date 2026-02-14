@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/BasisTI/daggerverse/gitlabci"
 )
 
 // PublishAll constrói e publica as imagens de todos os projetos alterados.
@@ -44,11 +46,21 @@ func PublishAll[Dir any, Secret any](
 		if !exists {
 			return "", fmt.Errorf("serviço '%s' alterado mas sem estratégia de build definida", targetName)
 		}
+		statusName := targetName + ": Build"
+		if ops.GitLabClient != nil {
+			_ = ops.GitLabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
+		}
 		fmt.Printf("🚀 [Build] Iniciando: %s (v%s)\n", targetName, version)
 		dir := target.SourcePath(targetName)
 		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), commitSha, version, registry, registryUser, registryPassword)
 		if err != nil {
+			if ops.GitLabClient != nil {
+				_ = ops.GitLabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
+			}
 			return "", fmt.Errorf("falha no build de %s: %w", targetName, err)
+		}
+		if ops.GitLabClient != nil {
+			_ = ops.GitLabClient.SetCommitStatus(commitSha, gitlabci.StateSuccess, statusName, "")
 		}
 		sb.WriteString(img + "\n")
 	}
@@ -69,7 +81,7 @@ func CheckQuality[Dir any, Secret any](
 	ops DaggerOps[Dir, Secret],
 	qualityTargets map[string]QualityTarget[Dir, Secret],
 	source Dir,
-	baseBranch, sonarHost string,
+	baseBranch, commitSha, sonarHost string,
 	sonarToken Secret,
 	stopOnFirstFail bool,
 ) error {
@@ -104,14 +116,24 @@ func CheckQuality[Dir any, Secret any](
 	for _, targetName := range targets {
 		target := qualityTargets[targetName]
 		dir := target.SourcePath(targetName)
+		statusName := targetName + ": Quality"
+		if ops.GitLabClient != nil {
+			_ = ops.GitLabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
+		}
 		fmt.Printf("🔍 [Quality] Verificando: %s\n", targetName)
 		if checkErr := target.Check(ctx, ops.GetSubDirectory(source, dir), sonarHost, sonarToken); checkErr != nil {
+			if ops.GitLabClient != nil {
+				_ = ops.GitLabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
+			}
 			if stopOnFirstFail {
 				return fmt.Errorf("quality gate falhou para %s: %w", targetName, checkErr)
 			}
 			failures = append(failures, qualityFailure{name: targetName, err: checkErr})
 			fmt.Printf("❌ [Quality] Falhou: %s: %v\n", targetName, checkErr)
 		} else {
+			if ops.GitLabClient != nil {
+				_ = ops.GitLabClient.SetCommitStatus(commitSha, gitlabci.StateSuccess, statusName, "")
+			}
 			fmt.Printf("✅ [Quality] OK: %s\n", targetName)
 		}
 	}
