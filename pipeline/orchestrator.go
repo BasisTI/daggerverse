@@ -59,7 +59,7 @@ func PublishAll[Dir any, Secret any](
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
 		fmt.Printf("🚀 [Build] Iniciando: %s (v%s)\n", targetName, version)
 		dir := target.SourcePath(targetName)
-		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), commitSha, version, registry, registryUser, registryPassword)
+		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), targetName, commitSha, version, registry, registryUser, registryPassword)
 		if err != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
 			return "", fmt.Errorf("falha no build de %s: %w", targetName, err)
@@ -122,7 +122,7 @@ func CheckQuality[Dir any, Secret any](
 		statusName := targetName + ": Quality"
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
 		fmt.Printf("🔍 [Quality] Verificando: %s\n", targetName)
-		if checkErr := target.Check(ctx, ops.GetSubDirectory(source, dir), sonarHost, sonarToken); checkErr != nil {
+		if checkErr := target.Check(ctx, ops.GetSubDirectory(source, dir), targetName, sonarHost, sonarToken); checkErr != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
 			if stopOnFirstFail {
 				return fmt.Errorf("quality gate falhou para %s: %w", targetName, checkErr)
