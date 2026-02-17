@@ -201,10 +201,10 @@ func (u *OrchestratorUtils) CommitAndPush(
 	}
 
 	git := dag.Container().From("alpine/git").
+		WithEnvVariable("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt").
 		WithDirectory("/src", source).
 		WithWorkdir("/src").
 		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
-		WithExec([]string{"git", "config", "--global", "http.sslCAInfo", ""}).
 		WithExec([]string{"git", "config", "user.email", "ci-bot@basis.com.br"}).
 		WithExec([]string{"git", "config", "user.name", "CI Bot"})
 
