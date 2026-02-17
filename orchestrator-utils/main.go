@@ -71,7 +71,7 @@ func (u *OrchestratorUtils) GetLastCommitSha(
 	out, err := dag.Container().From("alpine/git").
 		WithWorkdir("/src").WithDirectory("/src", source).
 		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
-		WithExec([]string{"git", "log", "-n", "1", "--pretty=format:%H",
+		WithExec([]string{"git", "log", "-n", "1", "--first-parent", "--pretty=format:%H",
 			"--grep=^\\[skip ci\\]", "--invert-grep", "--", path}).
 		Stdout(ctx)
 	return strings.TrimSpace(out), err
