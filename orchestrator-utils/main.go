@@ -179,6 +179,55 @@ func (u *OrchestratorUtils) CheckImages(
 	return nil
 }
 
+// CommitAndPush commits specified files and pushes to a remote branch.
+// The commit message is automatically prefixed with [skip ci] to prevent
+// triggering a new pipeline (supported natively by GitLab CI).
+func (u *OrchestratorUtils) CommitAndPush(
+	ctx context.Context,
+	// Diretório raiz do repositório Git com as alterações.
+	source *dagger.Directory,
+	// Arquivos a commitar (ex: ["odoo-modules.yaml", "addons/rh_basis/__manifest__.py"]).
+	files []string,
+	// Mensagem do commit (será prefixada com [skip ci]).
+	message string,
+	// Branch de destino para o push.
+	branch string,
+	// URL do remote Git com credenciais (ex: https://token:xxx@gitlab.com/org/repo.git).
+	remoteUrl string,
+) error {
+	if len(files) == 0 {
+		fmt.Println("CommitAndPush: nenhum arquivo especificado, pulando")
+		return nil
+	}
+
+	git := dag.Container().From("alpine/git").
+		WithDirectory("/src", source).
+		WithWorkdir("/src").
+		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
+		WithExec([]string{"git", "config", "user.email", "ci-bot@basis.com.br"}).
+		WithExec([]string{"git", "config", "user.name", "CI Bot"})
+
+	// Stage each file
+	for _, f := range files {
+		git = git.WithExec([]string{"git", "add", f})
+	}
+
+	// Commit
+	commitMsg := fmt.Sprintf("[skip ci] %s", message)
+	git = git.WithExec([]string{"git", "commit", "-m", commitMsg})
+
+	// Push
+	git = git.WithExec([]string{"git", "push", remoteUrl, "HEAD:" + branch})
+
+	_, err := git.Sync(ctx)
+	if err != nil {
+		return fmt.Errorf("commit-and-push failed: %w", err)
+	}
+
+	fmt.Printf("CommitAndPush: pushed %d file(s) to %s\n", len(files), branch)
+	return nil
+}
+
 // GitLabConfig stores the data needed to report commit statuses to GitLab.
 type GitLabConfig struct {
 	Host        string         // URL base (ex: "https://gitlab.com")
