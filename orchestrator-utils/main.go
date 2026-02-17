@@ -59,7 +59,8 @@ func (u *OrchestratorUtils) GetChangedProjects(
 	return list, nil
 }
 
-// GetLastCommitSha retorna o SHA do último commit que alterou o path especificado.
+// GetLastCommitSha retorna o SHA do último commit que alterou o path especificado,
+// ignorando commits automáticos de CI (prefixados com [skip ci]).
 func (u *OrchestratorUtils) GetLastCommitSha(
 	ctx context.Context,
 	// Diretório raiz do repositório Git.
@@ -70,7 +71,8 @@ func (u *OrchestratorUtils) GetLastCommitSha(
 	out, err := dag.Container().From("alpine/git").
 		WithWorkdir("/src").WithDirectory("/src", source).
 		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
-		WithExec([]string{"git", "log", "-n", "1", "--pretty=format:%H", "--", path}).
+		WithExec([]string{"git", "log", "-n", "1", "--pretty=format:%H",
+			"--grep=^\\[skip ci\\]", "--invert-grep", "--", path}).
 		Stdout(ctx)
 	return strings.TrimSpace(out), err
 }
