@@ -204,6 +204,7 @@ func (u *OrchestratorUtils) CommitAndPush(
 		WithDirectory("/src", source).
 		WithWorkdir("/src").
 		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
+		WithExec([]string{"git", "config", "--global", "http.sslCAInfo", ""}).
 		WithExec([]string{"git", "config", "user.email", "ci-bot@basis.com.br"}).
 		WithExec([]string{"git", "config", "user.name", "CI Bot"})
 
