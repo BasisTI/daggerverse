@@ -236,8 +236,8 @@ func (u *OrchestratorUtils) CommitAndPush(
 func sedExprForFile(filePath, version string) string {
 	switch filepath.Base(filePath) {
 	case "pom.xml":
-		// Apenas a primeira <version> (a do projeto, não a do parent)
-		return fmt.Sprintf(`0,/<version>.*<\/version>/s//<version>%s<\/version>/`, version)
+		// Range entre <artifactId> e <packaging> garante que só a versão do projeto é alterada
+		return fmt.Sprintf(`/<artifactId>/,/<packaging>/{s/<version>.*<\/version>/<version>%s<\/version>/}`, version)
 	case "package.json":
 		return fmt.Sprintf(`s/"version": ".*"/"version": "%s"/`, version)
 	case "pyproject.toml":
