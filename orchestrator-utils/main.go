@@ -9,6 +9,7 @@ import (
 	"dagger/orchestrator-utils/internal/dagger"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -229,6 +230,65 @@ func (u *OrchestratorUtils) CommitAndPush(
 
 	fmt.Printf("CommitAndPush: pushed %d file(s) to %s\n", len(files), branch)
 	return nil
+}
+
+// sedExprForFile retorna a expressão sed adequada baseada no nome do arquivo de versão.
+func sedExprForFile(filePath, version string) string {
+	switch filepath.Base(filePath) {
+	case "pom.xml":
+		// Apenas a primeira <version> (a do projeto, não a do parent)
+		return fmt.Sprintf(`0,/<version>.*<\/version>/s//<version>%s<\/version>/`, version)
+	case "package.json":
+		return fmt.Sprintf(`s/"version": ".*"/"version": "%s"/`, version)
+	case "pyproject.toml":
+		return fmt.Sprintf(`s/^version = ".*"/version = "%s"/`, version)
+	default:
+		return ""
+	}
+}
+
+// BumpAndCommitVersions faz bump de versão nos arquivos especificados e commita+push.
+// O tipo de bump (Maven, npm, Python) é deduzido automaticamente pelo nome do arquivo
+// (pom.xml, package.json, pyproject.toml).
+func (u *OrchestratorUtils) BumpAndCommitVersions(
+	ctx context.Context,
+	// Diretório raiz do repositório Git.
+	source *dagger.Directory,
+	// Arquivos de versão a bumpar (ex: ["admin_backend/pom.xml", "frontend/package.json"]).
+	versionFiles []string,
+	// Nova versão a aplicar.
+	version string,
+	// Mensagem do commit (será prefixada com [skip ci]).
+	message string,
+	// Branch de destino para o push.
+	branch string,
+	// URL do remote Git com credenciais.
+	remoteUrl string,
+) error {
+	if len(versionFiles) == 0 {
+		return nil
+	}
+
+	ctr := dag.Container().From("alpine:latest").
+		WithDirectory("/src", source).WithWorkdir("/src")
+
+	var validFiles []string
+	for _, vf := range versionFiles {
+		expr := sedExprForFile(vf, version)
+		if expr == "" {
+			fmt.Printf("BumpAndCommitVersions: tipo desconhecido para %s, pulando\n", vf)
+			continue
+		}
+		ctr = ctr.WithExec([]string{"sed", "-i", expr, vf})
+		validFiles = append(validFiles, vf)
+	}
+
+	if len(validFiles) == 0 {
+		return nil
+	}
+
+	bumpedSource := ctr.Directory("/src")
+	return u.CommitAndPush(ctx, bumpedSource, validFiles, message, branch, remoteUrl)
 }
 
 // GitLabConfig stores the data needed to report commit statuses to GitLab.

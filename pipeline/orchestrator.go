@@ -19,6 +19,7 @@ func setStatus(client *gitlabci.Client, sha string, state gitlabci.State, name s
 }
 
 // PublishAll constrói e publica as imagens de todos os projetos alterados.
+// Retorna um PublishResult com as imagens publicadas e os arquivos de versão dos projetos alterados.
 func PublishAll[Dir any, Secret any](
 	ctx context.Context,
 	ops DaggerOps[Dir, Secret],
@@ -26,7 +27,7 @@ func PublishAll[Dir any, Secret any](
 	source Dir,
 	baseBranch, commitSha, version, registry, registryUser string,
 	registryPassword Secret,
-) (string, error) {
+) (PublishResult, error) {
 	projectCfg := make(ProjectConfig, len(buildTargets))
 	for name, target := range buildTargets {
 		projectCfg[name] = target.SourcePath(name)
@@ -34,26 +35,27 @@ func PublishAll[Dir any, Secret any](
 
 	pathsJson, err := json.Marshal(projectCfg)
 	if err != nil {
-		return "", err
+		return PublishResult{}, err
 	}
 
 	targets, err := ops.GetChangedProjects(ctx, source, baseBranch, string(pathsJson))
 	if err != nil {
-		return "", err
+		return PublishResult{}, err
 	}
 
 	if len(targets) == 0 {
 		fmt.Println("✅ Nenhuma mudança detectada. Finalizando Pipeline.")
-		return "", nil
+		return PublishResult{}, nil
 	}
 
 	fmt.Printf("🎯 Targets para build: %v\n", targets)
 
 	var sb strings.Builder
+	var versionFiles []string
 	for _, targetName := range targets {
 		target, exists := buildTargets[targetName]
 		if !exists {
-			return "", fmt.Errorf("serviço '%s' alterado mas sem estratégia de build definida", targetName)
+			return PublishResult{}, fmt.Errorf("serviço '%s' alterado mas sem estratégia de build definida", targetName)
 		}
 		statusName := targetName + ": Build"
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
@@ -62,20 +64,27 @@ func PublishAll[Dir any, Secret any](
 		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), targetName, commitSha, version, registry, registryUser, registryPassword)
 		if err != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
-			return "", fmt.Errorf("falha no build de %s: %w", targetName, err)
+			return PublishResult{}, fmt.Errorf("falha no build de %s: %w", targetName, err)
 		}
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateSuccess, statusName)
 		sb.WriteString(img + "\n")
+
+		if target.VersionFile != "" {
+			versionFiles = append(versionFiles, dir+"/"+target.VersionFile)
+		}
 	}
 
 	published := sb.String()
 	if published != "" {
 		if err := ops.TagWithSha(ctx, published, commitSha, registryUser, registryPassword); err != nil {
-			return "", fmt.Errorf("falha ao adicionar tag SHA: %w", err)
+			return PublishResult{}, fmt.Errorf("falha ao adicionar tag SHA: %w", err)
 		}
 	}
 
-	return published, nil
+	return PublishResult{
+		Published:    published,
+		VersionFiles: versionFiles,
+	}, nil
 }
 
 // CheckQuality roda testes e análise estática (Sonar) nos projetos alterados.

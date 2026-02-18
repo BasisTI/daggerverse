@@ -14,8 +14,15 @@ type BuildStrategy[Dir any, Secret any] func(
 
 // BuildTarget associa um método de build a um path opcional no repositório.
 type BuildTarget[Dir any, Secret any] struct {
-	Build BuildStrategy[Dir, Secret]
-	Path  string
+	Build       BuildStrategy[Dir, Secret]
+	Path        string
+	VersionFile string // arquivo de versão relativo ao path (ex: "pom.xml", "package.json", "pyproject.toml")
+}
+
+// PublishResult contém o resultado de PublishAll.
+type PublishResult struct {
+	Published    string   // imagens publicadas (uma por linha)
+	VersionFiles []string // paths relativos ao repo dos arquivos de versão bumped (ex: "admin_backend/pom.xml")
 }
 
 // SourcePath retorna o path do projeto no repositório.
