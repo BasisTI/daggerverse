@@ -8,9 +8,12 @@ import (
 	"context"
 	"dagger/orchestrator-utils/internal/dagger"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // OrchestratorUtils fornece utilitários Git para pipelines de CI/CD.
@@ -232,18 +235,127 @@ func (u *OrchestratorUtils) CommitAndPush(
 	return nil
 }
 
-// sedExprForFile retorna a expressão sed adequada baseada no nome do arquivo de versão.
-func sedExprForFile(filePath, version string) string {
-	switch filepath.Base(filePath) {
+// bumpPomVersion substitui a versão do projeto num pom.xml usando o XML decoder.
+// Encontra a primeira <version> filha direta de <project> (depth 2) e a substitui,
+// preservando toda a formatação original do arquivo.
+func bumpPomVersion(content, version string) (string, error) {
+	decoder := xml.NewDecoder(strings.NewReader(content))
+	depth := 0
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			return "", fmt.Errorf("pom.xml: no project <version> found")
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			if depth == 2 && t.Name.Local == "version" {
+				// Ler o conteúdo atual da tag
+				var oldVersion string
+				if err := decoder.DecodeElement(&oldVersion, &t); err != nil {
+					return "", fmt.Errorf("pom.xml: failed to decode <version>: %w", err)
+				}
+				// Substituir apenas esta ocorrência no conteúdo original
+				target := "<version>" + oldVersion + "</version>"
+				idx := strings.Index(content, target)
+				if idx < 0 {
+					return "", fmt.Errorf("pom.xml: could not locate <version>%s</version> in source", oldVersion)
+				}
+				replacement := "<version>" + version + "</version>"
+				return content[:idx] + replacement + content[idx+len(target):], nil
+			}
+		case xml.EndElement:
+			depth--
+		}
+	}
+}
+
+// bumpPackageJsonVersion substitui a versão num package.json usando encoding/json.
+// Preserva a formatação original substituindo apenas o valor do campo "version".
+func bumpPackageJsonVersion(content, version string) (string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return "", fmt.Errorf("package.json: %w", err)
+	}
+
+	oldVersionRaw, ok := raw["version"]
+	if !ok {
+		return "", fmt.Errorf("package.json: no \"version\" field found")
+	}
+
+	var oldVersion string
+	if err := json.Unmarshal(oldVersionRaw, &oldVersion); err != nil {
+		return "", fmt.Errorf("package.json: invalid version value: %w", err)
+	}
+
+	// Substituir no conteúdo original para preservar formatação
+	oldQuoted := `"` + oldVersion + `"`
+	newQuoted := `"` + version + `"`
+
+	// Encontrar a posição exata: procurar "version" seguido do valor
+	versionKeyIdx := strings.Index(content, `"version"`)
+	if versionKeyIdx < 0 {
+		return "", fmt.Errorf("package.json: could not locate \"version\" key in source")
+	}
+	// Procurar o valor após a chave
+	afterKey := content[versionKeyIdx:]
+	valueIdx := strings.Index(afterKey, oldQuoted)
+	if valueIdx < 0 {
+		return "", fmt.Errorf("package.json: could not locate version value in source")
+	}
+	absIdx := versionKeyIdx + valueIdx
+	return content[:absIdx] + newQuoted + content[absIdx+len(oldQuoted):], nil
+}
+
+// pyProject representa a estrutura mínima de um pyproject.toml para extrair [project].version.
+type pyProject struct {
+	Project struct {
+		Version string `toml:"version"`
+	} `toml:"project"`
+}
+
+// bumpPyprojectVersion substitui [project].version num pyproject.toml usando go-toml.
+// Preserva a formatação original localizando o valor exato no conteúdo.
+func bumpPyprojectVersion(content, version string) (string, error) {
+	var cfg pyProject
+	if err := toml.Unmarshal([]byte(content), &cfg); err != nil {
+		return "", fmt.Errorf("pyproject.toml: %w", err)
+	}
+
+	oldVersion := cfg.Project.Version
+	if oldVersion == "" {
+		return "", fmt.Errorf("pyproject.toml: no [project].version found")
+	}
+
+	// Localizar 'version = "oldVersion"' após a seção [project]
+	projectIdx := strings.Index(content, "[project]")
+	if projectIdx < 0 {
+		return "", fmt.Errorf("pyproject.toml: [project] section not found")
+	}
+
+	afterProject := content[projectIdx:]
+	target := `"` + oldVersion + `"`
+	valueIdx := strings.Index(afterProject, target)
+	if valueIdx < 0 {
+		return "", fmt.Errorf("pyproject.toml: could not locate version value in [project] section")
+	}
+
+	absIdx := projectIdx + valueIdx
+	replacement := `"` + version + `"`
+	return content[:absIdx] + replacement + content[absIdx+len(target):], nil
+}
+
+// bumpFileVersion substitui a versão no conteúdo do arquivo, baseado no tipo.
+func bumpFileVersion(content, version, filename string) (string, error) {
+	switch filename {
 	case "pom.xml":
-		// Range entre <artifactId> e <packaging> garante que só a versão do projeto é alterada
-		return fmt.Sprintf(`/<artifactId>/,/<packaging>/{s/<version>.*<\/version>/<version>%s<\/version>/}`, version)
+		return bumpPomVersion(content, version)
 	case "package.json":
-		return fmt.Sprintf(`s/"version": ".*"/"version": "%s"/`, version)
+		return bumpPackageJsonVersion(content, version)
 	case "pyproject.toml":
-		return fmt.Sprintf(`s/^version = ".*"/version = "%s"/`, version)
+		return bumpPyprojectVersion(content, version)
 	default:
-		return ""
+		return "", fmt.Errorf("unsupported version file type: %s", filename)
 	}
 }
 
@@ -269,26 +381,23 @@ func (u *OrchestratorUtils) BumpAndCommitVersions(
 		return nil
 	}
 
-	ctr := dag.Container().From("alpine:latest").
-		WithDirectory("/src", source).WithWorkdir("/src")
-
-	var validFiles []string
+	bumpedSource := source
 	for _, vf := range versionFiles {
-		expr := sedExprForFile(vf, version)
-		if expr == "" {
-			fmt.Printf("BumpAndCommitVersions: tipo desconhecido para %s, pulando\n", vf)
-			continue
+		content, err := source.File(vf).Contents(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", vf, err)
 		}
-		ctr = ctr.WithExec([]string{"sed", "-i", expr, vf})
-		validFiles = append(validFiles, vf)
+
+		modified, err := bumpFileVersion(content, version, filepath.Base(vf))
+		if err != nil {
+			return err
+		}
+
+		bumpedSource = bumpedSource.WithNewFile(vf, modified)
+		fmt.Printf("BumpAndCommitVersions: %s -> %s\n", vf, version)
 	}
 
-	if len(validFiles) == 0 {
-		return nil
-	}
-
-	bumpedSource := ctr.Directory("/src")
-	return u.CommitAndPush(ctx, bumpedSource, validFiles, message, branch, remoteUrl)
+	return u.CommitAndPush(ctx, bumpedSource, versionFiles, message, branch, remoteUrl)
 }
 
 // GitLabConfig stores the data needed to report commit statuses to GitLab.

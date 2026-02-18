@@ -12,6 +12,7 @@ require (
 
 require (
 	github.com/99designs/gqlgen v0.17.81 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.14.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.14.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.38.0 // indirect
