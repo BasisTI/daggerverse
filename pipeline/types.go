@@ -2,7 +2,13 @@ package pipeline
 
 import "context"
 
-// ProjectConfig mapeia Path -> Nome do Serviço.
+// Version file constants
+
+const VfMaven = "pom.xml"
+const VfUv = "pyproject.toml"
+const VfNpm = "package.json"
+
+// ProjectConfig maps Path to Service name.
 type ProjectConfig map[string]string
 
 // BuildStrategy é a assinatura genérica de uma função de build.
