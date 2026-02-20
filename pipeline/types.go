@@ -20,9 +20,10 @@ type BuildStrategy[Dir any, Secret any] func(
 
 // BuildTarget associa um método de build a um path opcional no repositório.
 type BuildTarget[Dir any, Secret any] struct {
-	Build       BuildStrategy[Dir, Secret]
-	Path        string
-	VersionFile string // arquivo de versão relativo ao path (ex: "pom.xml", "package.json", "pyproject.toml")
+	Build          BuildStrategy[Dir, Secret]
+	Path           string
+	VersionFile    string // arquivo de versão relativo ao path (ex: "pom.xml", "package.json", "pyproject.toml")
+	EntryPointInfo string // Extra info to customize entrypoint, optional
 }
 
 // PublishResult contém o resultado de PublishAll.
