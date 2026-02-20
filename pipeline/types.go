@@ -15,7 +15,7 @@ type ProjectConfig map[string]string
 type BuildStrategy[Dir any, Secret any] func(
 	ctx context.Context, source Dir,
 	module, commitSha, version, registry, registryUser string,
-	registryPassword Secret,
+	registryPassword Secret, entrypointInfo string,
 ) (string, error)
 
 // BuildTarget associa um método de build a um path opcional no repositório.
