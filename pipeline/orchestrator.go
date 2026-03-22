@@ -61,7 +61,7 @@ func PublishAll[Dir any, Secret any](
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
 		fmt.Printf("🚀 [Build] Iniciando: %s (v%s)\n", targetName, version)
 		dir := target.SourcePath(targetName)
-		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), targetName, commitSha, version, registry, registryUser, registryPassword)
+		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), targetName, commitSha, version, registry, registryUser, registryPassword, target.EntryPointInfo)
 		if err != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
 			return PublishResult{}, fmt.Errorf("falha no build de %s: %w", targetName, err)
