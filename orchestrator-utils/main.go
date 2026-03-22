@@ -71,12 +71,24 @@ func (u *OrchestratorUtils) GetLastCommitSha(
 	source *dagger.Directory,
 	// Path do projeto no repositório.
 	path string,
+	// Ref Git a partir da qual buscar (ex: "origin/develop"). Se vazio, usa HEAD.
+	// +optional
+	ref string,
 ) (string, error) {
+	args := []string{"git", "log", "-n", "1", "--first-parent", "--pretty=format:%H",
+		"--grep=^\\[skip ci\\]", "--invert-grep"}
+
+	// Se um ref foi especificado, usá-lo como ponto de partida em vez de HEAD
+	if ref != "" {
+		args = append(args, ref)
+	}
+
+	args = append(args, "--", path)
+
 	out, err := dag.Container().From("alpine/git").
 		WithWorkdir("/src").WithDirectory("/src", source).
 		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
-		WithExec([]string{"git", "log", "-n", "1", "--first-parent", "--pretty=format:%H",
-			"--grep=^\\[skip ci\\]", "--invert-grep", "--", path}).
+		WithExec(args).
 		Stdout(ctx)
 	return strings.TrimSpace(out), err
 }
@@ -164,7 +176,7 @@ func (u *OrchestratorUtils) CheckImages(
 
 	var missing []string
 	for imagePath, repoPath := range projectImages {
-		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath)
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath, "")
 		if err != nil {
 			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
 		}
@@ -433,7 +445,7 @@ func (u *OrchestratorUtils) NewGitLabConfig(
 }
 
 // Promote promove imagens de um registry de staging para production,
-// relendo a versão original do label OCI e fazendo crane copy.
+// relendo a versão original do label OCI e fazendo crane copy com tag production-{version}.
 //
 // projectImagesJson mapeia "caminho_imagem_no_registry" -> "path_no_repo".
 func (u *OrchestratorUtils) Promote(
@@ -444,13 +456,17 @@ func (u *OrchestratorUtils) Promote(
 	projectImagesJson string,
 	// Registry de origem (staging).
 	srcRegistry string,
-	// Registry de destino (production). Se vazio, usa srcRegistry.
-	// +optional
-	dstRegistry string,
 	// Usuário para autenticação nos registries.
 	registryUser string,
 	// Senha para autenticação nos registries.
 	registryPass *dagger.Secret,
+	// Registry de destino (production). Se vazio, usa srcRegistry.
+	// +optional
+	dstRegistry string,
+	// Ref Git da branch onde as imagens foram construídas (ex: "origin/develop").
+	// Se vazio, busca a partir de HEAD.
+	// +optional
+	buildBranch string,
 ) error {
 	if dstRegistry == "" {
 		dstRegistry = srcRegistry
@@ -472,7 +488,7 @@ func (u *OrchestratorUtils) Promote(
 	}
 
 	for imagePath, repoPath := range projectImages {
-		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath)
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath, buildBranch)
 		if err != nil {
 			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
 		}
@@ -488,7 +504,7 @@ func (u *OrchestratorUtils) Promote(
 			continue
 		}
 
-		dstImageRef := fmt.Sprintf("%s/%s:%s", dstRegistry, imagePath, originalVersion)
+		dstImageRef := fmt.Sprintf("%s/%s:production-%s", dstRegistry, imagePath, originalVersion)
 
 		fmt.Printf("📦 Promovendo: %s -> %s\n", srcImageRef, dstImageRef)
 
