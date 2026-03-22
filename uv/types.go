@@ -70,17 +70,17 @@ func (u *Uv) NewDockerBuildConfig(registry string, group string, image string, u
 func (u *Uv) NewSonarConfig(host string,
 	tokenSecret *dagger.Secret,
 	projectKey string,
-	// +default="sonarsource/sonar-scanner-cli:11.4.0.2044_7.2.0"
+// +default="sonarsource/sonar-scanner-cli:12.0.0.3214_8.0.1"
 	analysisImage string,
-	// +default="SONARQUBE-CACHE"
+// +default="SONARQUBE-CACHE"
 	cacheKey string,
-	// +default=true
+// +default=true
 	useCache bool,
-	// +default=true
+// +default=true
 	waitForQualityGate bool,
-	// +default="/usr/src"
+// +default="/usr/src"
 	workDir string,
-	// +optional
+// +optional
 	extraOptions []string) (*SonarConfig, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is empty")
