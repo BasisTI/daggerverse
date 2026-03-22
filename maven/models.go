@@ -61,6 +61,31 @@ type SonarConfig struct {
 	ExtraOptions       []string
 }
 
+// GitLabConfig stores the data needed to report commit statuses to GitLab.
+type GitLabConfig struct {
+	Host        string         // URL base (ex: "https://gitlab.com")
+	TokenSecret *dagger.Secret // Token com scope `api`
+	ProjectID   string         // ID numérico ou path URL-encoded
+}
+
+// NewGitLabConfig validates the provided inputs and returns a GitLab configuration for commit statuses.
+func (m *Maven) NewGitLabConfig(host string, tokenSecret *dagger.Secret, projectID string) (*GitLabConfig, error) {
+	if host == "" {
+		return nil, fmt.Errorf("host is empty")
+	}
+	if tokenSecret == nil {
+		return nil, fmt.Errorf("token secret is empty")
+	}
+	if projectID == "" {
+		return nil, fmt.Errorf("project ID is empty")
+	}
+	return &GitLabConfig{
+		Host:        host,
+		TokenSecret: tokenSecret,
+		ProjectID:   projectID,
+	}, nil
+}
+
 // NewDockerBuildConfig creates a DockerBuildConfig tailored for Maven builds.
 func (m *Maven) NewDockerBuildConfig(
 	image string,

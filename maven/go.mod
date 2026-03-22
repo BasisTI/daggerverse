@@ -2,6 +2,8 @@ module dagger/maven
 
 go 1.24.3
 
+require github.com/BasisTI/daggerverse/gitlabci v0.2.0
+
 require (
 	github.com/99designs/gqlgen v0.17.81
 	github.com/Khan/genqlient v0.8.1
@@ -25,6 +27,7 @@ require (
 )
 
 require (
+	dagger.io/dagger v0.19.11
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

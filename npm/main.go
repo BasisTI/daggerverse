@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/BasisTI/daggerverse/gitlabci"
 )
 
 const DefaultNpmCacheName = "npm-cache"
@@ -25,6 +27,7 @@ type Npm struct {
 }
 
 type packageJSON struct {
+	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
@@ -74,6 +77,19 @@ func (n *Npm) GetAngularDistDir() *dagger.Directory {
 	return n.Container().Directory(fmt.Sprintf("%s/dist/browser", DefaultWorkdir))
 }
 
+// getProjectName reads the project name from package.json.
+func (n *Npm) getProjectName(ctx context.Context) string {
+	contents, err := n.Source.File("package.json").Contents(ctx)
+	if err != nil {
+		return ""
+	}
+	var pkg packageJSON
+	if err := json.Unmarshal([]byte(contents), &pkg); err != nil {
+		return ""
+	}
+	return pkg.Name
+}
+
 // FullBuild executes a typical npm pipeline: install dependencies, run tests, build assets, optional Sonar analysis, and image metadata preparation.
 func (n *Npm) FullBuild(ctx context.Context,
 	// Git commit SHA for image labels
@@ -85,7 +101,11 @@ func (n *Npm) FullBuild(ctx context.Context,
 	// +optional
 	sonarConfig *SonarConfig,
 	// +optional
-	dockerConfig *DockerBuildConfig) (*BuildResult, error) {
+	dockerConfig *DockerBuildConfig,
+	// GitLab configuration for reporting commit statuses
+	// +optional
+	gitlabConfig *GitLabConfig,
+) (*BuildResult, error) {
 	if n.Source == nil {
 		return nil, fmt.Errorf("source is nil")
 	}
@@ -118,7 +138,20 @@ func (n *Npm) FullBuild(ctx context.Context,
 				Owner:       "scanner-cli",
 			})
 	}
-	result, err := n.executeStages(ctx, stages)
+	var gitlabClient *gitlabci.Client
+	if gitlabConfig != nil {
+		token, err := gitlabConfig.TokenSecret.Plaintext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get gitlab token: %w", err)
+		}
+		gitlabClient = &gitlabci.Client{
+			BaseURL:   gitlabConfig.Host,
+			Token:     token,
+			ProjectID: gitlabConfig.ProjectID,
+		}
+	}
+
+	result, err := n.executeStages(ctx, stages, gitlabClient, commitSha)
 	if err != nil {
 		return nil, err
 	}
@@ -148,11 +181,27 @@ func (n *Npm) FullBuild(ctx context.Context,
 }
 
 // executeStages runs each pipeline stage sequentially while collecting logs and artifacts.
-func (n *Npm) executeStages(ctx context.Context, stages []PipelineStage) (*BuildResult, error) {
+func (n *Npm) executeStages(ctx context.Context, stages []PipelineStage, gitlabClient *gitlabci.Client, commitSha string) (*BuildResult, error) {
+	var statusPrefix string
+	if gitlabClient != nil {
+		statusPrefix = n.getProjectName(ctx)
+	}
 	stageContainer := n.Container()
 	result := &BuildResult{}
 	for _, stage := range stages {
+		statusName := ""
+		if statusPrefix != "" {
+			statusName = fmt.Sprintf("%s: %s", statusPrefix, stage.DisplayName)
+			_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
+		}
 		stageResult, err := n.executeStage(ctx, stageContainer, stage)
+		if statusName != "" {
+			if err != nil {
+				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
+			} else {
+				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateSuccess, statusName, "")
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
