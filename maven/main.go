@@ -148,7 +148,10 @@ func (m *Maven) executeStages(
 	gitlabClient *gitlabci.Client,
 	commitSha string,
 ) (*ModuleBuildResult, error) {
-	stageContainer := m.Container()
+	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)
+	stageContainer := m.Container().
+		WithDirectory(moduleDir, source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"target"}}).
+		WithWorkdir(moduleDir)
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
 		statusName := ""
@@ -156,7 +159,7 @@ func (m *Maven) executeStages(
 			statusName = fmt.Sprintf("%s: %s", module, stage.DisplayName)
 			_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
 		}
-		buildResultStage, err := m.executeStage(ctx, source, module, stage, stageContainer)
+		buildResultStage, err := m.executeStage(ctx, module, stage, stageContainer)
 		if statusName != "" {
 			if err != nil {
 				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
@@ -176,17 +179,13 @@ func (m *Maven) executeStages(
 	return result, nil
 }
 
-// executeStage mounts the module source, runs the Maven goals for a stage, and captures outputs.
+// executeStage runs the Maven goals for a stage and captures outputs.
 func (m *Maven) executeStage(
 	ctx context.Context,
-	source *dagger.Directory,
 	module string,
 	stage PipelineStage,
 	stageContainer *dagger.Container) (*StageBuildResult, error) {
-	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)
 	stageContainer = stageContainer.
-		WithDirectory(moduleDir, source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"target"}}).
-		WithWorkdir(moduleDir).
 		WithExec(m.getFullMvnModuleCommand(stage.Options, stage.Goals))
 	stdout, err := stageContainer.Stdout(ctx)
 	if err != nil {
@@ -197,6 +196,7 @@ func (m *Maven) executeStage(
 		// Non-fatal, stderr might be empty
 		stderr = ""
 	}
+	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)
 	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/target", moduleDir))
 	return &StageBuildResult{
 		Container: stageContainer,
