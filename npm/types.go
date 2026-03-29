@@ -69,11 +69,11 @@ func (n *Npm) NewDockerBuildConfig(registry string, group string, image string, 
 func (n *Npm) NewSonarConfig(host string,
 	tokenSecret *dagger.Secret,
 	projectKey string,
-	// +default=true
+// +default=true
 	waitForQualityGate bool,
-	// +optional
+// +optional
 	extraOptions []string,
-	// +default="sonarsource/sonar-scanner-cli:11.4.0.2044_7.2.0"
+// +default="sonarsource/sonar-scanner-cli:12.0.0.3214_8.0.1"
 	image string) (*SonarConfig, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is empty")
