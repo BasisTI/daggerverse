@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -244,6 +245,63 @@ func (u *OrchestratorUtils) CommitAndPush(
 	}
 
 	fmt.Printf("CommitAndPush: pushed %d file(s) to %s\n", len(files), branch)
+	return nil
+}
+
+// TagAndPush cria uma tag anotada em commitSha e faz push para o remote.
+// Idempotente: se a tag já existe no remote (verificado via git ls-remote),
+// retorna sem erro sem sobrescrever. Não assume que a tag seja inexistente
+// localmente — usa -f ao criar para cobrir o caso de tag herdada do clone.
+func (u *OrchestratorUtils) TagAndPush(
+	ctx context.Context,
+	// Diretório raiz do repositório Git (deve conter o commit alvo no histórico).
+	source *dagger.Directory,
+	// Nome da tag (ex: "v1.2.3", "bl_org_2026.04.19.1").
+	tagName string,
+	// SHA completo do commit onde a tag será criada.
+	commitSha string,
+	// Mensagem da tag anotada (suporta múltiplas linhas).
+	message string,
+	// URL do remote Git com credenciais (ex: https://oauth2:TOKEN@gitlab.com/org/repo.git).
+	remoteUrl string,
+) error {
+	if tagName == "" {
+		return fmt.Errorf("tagName é obrigatório")
+	}
+	if commitSha == "" {
+		return fmt.Errorf("commitSha é obrigatório")
+	}
+
+	// Verificação idempotente no remote. CACHE_BUSTER garante que runs futuras
+	// não reutilizem o resultado de um ls-remote antigo (Dagger cacheia execs).
+	checkOutput, err := dag.Container().From("alpine/git").
+		WithEnvVariable("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt").
+		WithEnvVariable("CACHE_BUSTER", time.Now().Format(time.RFC3339Nano)).
+		WithExec([]string{"git", "ls-remote", "--tags", remoteUrl, "refs/tags/" + tagName}).
+		Stdout(ctx)
+	if err != nil {
+		return fmt.Errorf("git ls-remote falhou para %s: %w", tagName, err)
+	}
+	if strings.TrimSpace(checkOutput) != "" {
+		fmt.Printf("TagAndPush: tag %s já existe no remote — skipping.\n", tagName)
+		return nil
+	}
+
+	_, err = dag.Container().From("alpine/git").
+		WithEnvVariable("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt").
+		WithDirectory("/src", source).
+		WithWorkdir("/src").
+		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"}).
+		WithExec([]string{"git", "config", "user.email", "ci-bot@basis.com.br"}).
+		WithExec([]string{"git", "config", "user.name", "CI Bot"}).
+		WithExec([]string{"git", "tag", "-a", "-f", tagName, commitSha, "-m", message}).
+		WithExec([]string{"git", "push", remoteUrl, "refs/tags/" + tagName}).
+		Sync(ctx)
+	if err != nil {
+		return fmt.Errorf("tag-and-push %s falhou: %w", tagName, err)
+	}
+
+	fmt.Printf("TagAndPush: tag %s criada em %s e enviada ao remote.\n", tagName, commitSha)
 	return nil
 }
 
