@@ -232,12 +232,8 @@ func (u *OrchestratorUtils) CommitAndPush(
 		git = git.WithExec([]string{"git", "add", f})
 	}
 
-	// Commit
-	commitMsg := fmt.Sprintf("[skip ci] %s", message)
-	git = git.WithExec([]string{"git", "commit", "-m", commitMsg})
-
-	// Push
-	git = git.WithExec([]string{"git", "push", remoteUrl, "HEAD:" + branch})
+	git = git.WithExec([]string{"git", "commit", "-m", message})
+	git = git.WithExec([]string{"git", "push", "-o", "ci.skip", remoteUrl, "HEAD:" + branch})
 
 	_, err := git.Sync(ctx)
 	if err != nil {
