@@ -161,6 +161,10 @@ func (u *OrchestratorUtils) CheckImages(
 	// Senha para autenticação no registry.
 	// +optional
 	registryPass *dagger.Secret,
+	// Ref Git da branch onde as imagens foram construídas (ex: "origin/develop").
+	// Se vazio, busca a partir de HEAD.
+	// +optional
+	buildBranch string,
 ) error {
 	var projectImages map[string]string
 	if err := json.Unmarshal([]byte(projectImagesJson), &projectImages); err != nil {
@@ -177,7 +181,7 @@ func (u *OrchestratorUtils) CheckImages(
 
 	var missing []string
 	for imagePath, repoPath := range projectImages {
-		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath, "")
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath, buildBranch)
 		if err != nil {
 			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
 		}
