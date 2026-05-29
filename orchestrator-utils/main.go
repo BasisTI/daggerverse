@@ -65,7 +65,7 @@ func (u *OrchestratorUtils) GetChangedProjects(
 }
 
 // GetLastCommitSha retorna o SHA do último commit que alterou o path especificado,
-// ignorando commits automáticos de CI (prefixados com [skip ci]).
+// ignorando commits automáticos de CI e commits de bump de versão.
 func (u *OrchestratorUtils) GetLastCommitSha(
 	ctx context.Context,
 	// Diretório raiz do repositório Git.
@@ -77,7 +77,7 @@ func (u *OrchestratorUtils) GetLastCommitSha(
 	ref string,
 ) (string, error) {
 	args := []string{"git", "log", "-n", "1", "--first-parent", "--pretty=format:%H",
-		"--grep=^\\[skip ci\\]", "--invert-grep"}
+		"--grep=^\\[skip ci\\]", "--grep=^Bump versão para ", "--invert-grep"}
 
 	// Se um ref foi especificado, usá-lo como ponto de partida em vez de HEAD
 	if ref != "" {
@@ -203,15 +203,15 @@ func (u *OrchestratorUtils) CheckImages(
 }
 
 // CommitAndPush commits specified files and pushes to a remote branch.
-// The commit message is automatically prefixed with [skip ci] to prevent
-// triggering a new pipeline (supported natively by GitLab CI).
+// The push uses ci.skip to avoid triggering a branch pipeline while still
+// allowing merge request pipelines for the same commit.
 func (u *OrchestratorUtils) CommitAndPush(
 	ctx context.Context,
 	// Diretório raiz do repositório Git com as alterações.
 	source *dagger.Directory,
 	// Arquivos a commitar (ex: ["odoo-modules.yaml", "addons/rh_basis/__manifest__.py"]).
 	files []string,
-	// Mensagem do commit (será prefixada com [skip ci]).
+	// Mensagem do commit.
 	message string,
 	// Branch de destino para o push.
 	branch string,
