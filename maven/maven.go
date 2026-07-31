@@ -41,6 +41,8 @@ type Maven struct {
 	// Container used to run the builds
 	baseContainer *dagger.Container
 	UseJib        bool
+	// Bind a Docker daemon to the build, for test suites that use Testcontainers
+	UseDocker bool
 }
 
 // DefaultMvnCiOptions lists the flags automatically added when UseDefaultCiOptions is enabled.
@@ -67,7 +69,12 @@ func New(
 	// +optional
 	parentPom *dagger.File,
 	// +default=true
-	useJib bool) *Maven {
+	useJib bool,
+	// Bind a Docker daemon to the build. Required by test suites that use Testcontainers: the
+	// Maven image ships no daemon, and without one they fail with "Could not find a valid Docker
+	// environment". Off by default because it costs a dind container per build.
+	// +default=false
+	useDocker bool) *Maven {
 	m := &Maven{
 		Image:               buildImage,
 		UseMvnw:             useMvnw,
@@ -76,6 +83,7 @@ func New(
 		ExtraOptions:        extraOptions,
 		ParentPom:           parentPom,
 		UseJib:              useJib,
+		UseDocker:           useDocker,
 	}
 	return m
 }
@@ -85,6 +93,9 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 	container := dag.Container().From(m.Image).WithWorkdir(BaseWorkdir)
 	if m.UseCache {
 		container = container.WithMountedCache("/root/.m2", dag.CacheVolume(DefaultMavenCacheName))
+	}
+	if m.UseDocker {
+		container = m.withDocker(container)
 	}
 	if m.ParentPom != nil {
 		container = container.
