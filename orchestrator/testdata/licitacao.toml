@@ -1,0 +1,55 @@
+schema-version = 1
+
+[project]
+group = "licitacao"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-21"
+use-docker = false
+
+[defaults.npm]
+build-image = "node:22-alpine"
+run-image = "nginx:alpine"
+
+[defaults.uv]
+build-image = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+run-image = "python:3.12-slim-bookworm"
+
+[targets.licitacao]
+type = "maven"
+sonar = true
+
+[targets.integracao]
+type = "maven"
+sonar = true
+
+[targets.frontend]
+type = "npm"
+sonar = true
+
+[targets.processos_judiciais]
+type = "uv"
+path = "scrapers/processos_judiciais"
+
+[targets.painel_licitacoes]
+type = "uv"
+run-subdir = "src"
+
+[targets.carga_editais]
+type = "uv"
+run-subdir = "src"
+
+[targets.comprasnet_nodriver]
+type = "dockerfile"
+path = "scrapers/comprasnet_nodriver"
+version-file = "pyproject.toml"
+
+[targets.mte]
+type = "dockerfile"
+path = "scrapers/mte"
+version-file = "pyproject.toml"
+
+[targets.cct_mte]
+type = "dockerfile"
+path = "scrapers/cct_mte"
+version-file = "pyproject.toml"

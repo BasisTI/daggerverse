@@ -1,0 +1,28 @@
+schema-version = 1
+
+[project]
+group = "triagem"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-25"
+use-docker = true
+
+[targets.triagem-core]
+type = "maven"
+source-path = "."
+reactor = true
+module = "triagem-core"
+version-file = "pom.xml"
+root-version-file = true
+extra-trigger-paths = ["triagem-contracts", "pom.xml"]
+sonar = true
+
+[targets.triagem-ingestao]
+type = "maven"
+source-path = "."
+reactor = true
+module = "triagem-ingestao"
+version-file = "pom.xml"
+root-version-file = true
+extra-trigger-paths = ["triagem-contracts", "pom.xml"]
+sonar = true

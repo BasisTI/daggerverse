@@ -1,0 +1,26 @@
+{
+  "name": "orchestrator",
+  "engineVersion": "v0.21.7",
+  "sdk": {
+    "source": "go"
+  },
+  "dependencies": [
+    {
+      "name": "maven",
+      "source": "../maven"
+    },
+    {
+      "name": "npm",
+      "source": "../npm"
+    },
+    {
+      "name": "orchestrator-utils",
+      "source": "../orchestrator-utils"
+    },
+    {
+      "name": "uv",
+      "source": "../uv"
+    }
+  ],
+  "disableDefaultFunctionCaching": true
+}

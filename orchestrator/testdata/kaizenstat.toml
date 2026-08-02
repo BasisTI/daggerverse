@@ -1,0 +1,48 @@
+schema-version = 1
+
+[project]
+group = "kaizenstat"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-21"
+use-docker = true
+
+[targets.judge-admin]
+type = "maven"
+path = "apps/judge-admin"
+
+[targets.judge-api]
+type = "dockerfile"
+path = "apps/judge-api"
+source-path = "."
+dockerfile = "apps/judge-api/Dockerfile"
+
+[targets.judge-worker]
+type = "dockerfile"
+path = "apps/judge-worker"
+source-path = "."
+dockerfile = "apps/judge-worker/Dockerfile"
+
+[targets.judge-scheduler]
+type = "dockerfile"
+path = "apps/judge-scheduler"
+source-path = "."
+dockerfile = "apps/judge-scheduler/Dockerfile"
+
+[targets.judge-dashboard]
+type = "dockerfile"
+path = "apps/judge-dashboard"
+source-path = "."
+dockerfile = "apps/judge-dashboard/Dockerfile"
+
+[targets.hiring_salary_update]
+type = "dockerfile"
+path = "scripts/hiring_salary_update"
+source-path = "."
+dockerfile = "scripts/hiring_salary_update/Dockerfile"
+
+[targets.hiring_vagas_update]
+type = "dockerfile"
+path = "scripts/hiring_vagas_update"
+source-path = "."
+dockerfile = "scripts/hiring_vagas_update/Dockerfile"
