@@ -3,9 +3,10 @@ module dagger/uv
 go 1.26.1
 
 require (
+	github.com/BasisTI/daggerverse/pipeline v0.9.1
 	github.com/Khan/genqlient v0.8.1
 	github.com/dagger/otel-go v1.41.0
-	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/vektah/gqlparser/v2 v2.5.32
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/sdk v1.41.0

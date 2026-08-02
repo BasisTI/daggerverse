@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BasisTI/daggerverse/pipeline/sonarargs"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -223,34 +224,25 @@ func (u *Uv) buildSonarCommand(ctx context.Context, config *SonarConfig) ([]stri
 }
 
 // buildSonarOptions converts the Sonar configuration into CLI arguments for the scanner.
+//
+// A montagem da lista fica em pipeline/sonarargs, compartilhada com os módulos
+// maven e npm; aqui ficam apenas as bordas específicas do módulo: config nil vira
+// erro (diferente de maven/npm, que devolvem (nil, nil)) e o token é lido do Secret.
 func (u *Uv) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]string, error) {
 	if config == nil {
 		return nil, fmt.Errorf("sonar configuration is nil")
-	}
-
-	var options []string
-
-	if config.Host != "" {
-		options = append(options, fmt.Sprintf("-Dsonar.host.url=%s", config.Host))
 	}
 
 	token, err := config.TokenSecret.Plaintext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get sonar token: %w", err)
 	}
-	options = append(options, fmt.Sprintf("-Dsonar.token=%s", token))
 
-	if config.ProjectKey != "" {
-		options = append(options, fmt.Sprintf("-Dsonar.projectKey=%s", config.ProjectKey))
-	}
-
-	if config.WaitForQualityGate {
-		options = append(options, "-Dsonar.qualitygate.wait=true")
-	}
-
-	if config.ExtraOptions != nil {
-		options = append(options, config.ExtraOptions...)
-	}
-
-	return options, nil
+	return sonarargs.BuildOptions(
+		config.Host,
+		token,
+		config.ProjectKey,
+		config.WaitForQualityGate,
+		config.ExtraOptions,
+	), nil
 }

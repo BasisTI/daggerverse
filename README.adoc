@@ -1,34 +1,402 @@
 = Daggerverse
+:toc: macro
+:toclevels: 3
 
-Dagger modules and Go libraries for Basis CI/CD pipelines. Each module encapsulates a build technology (Maven, npm, uv) while shared libraries provide GitLab integration and pipeline orchestration.
+Módulos Dagger e bibliotecas Go das pipelines de CI/CD da Basis.
 
-== Modules
+A partir da versão *3.0* o repositório é dirigido por configuração: um projeto consumidor não escreve mais um módulo Dagger próprio, apenas declara seus targets em `ci/pipeline.toml` e inclui o template de CI. O módulo `orchestrator` faz o resto.
 
-=== orchestrator-utils
+toc::[]
 
-Git and container-registry utilities used by project orchestrators.Provides change detection between branches, commit SHA lookup, image tagging with `sha-+{commit}+`, image existence checks, and cross-registry promotion.
+== Visão geral
 
-All Git operations run inside an `alpine/git` container; image operations use https://github.com/google/go-containerregistry/tree/main/cmd/crane[crane].
+[cols="1,3"]
+|===
+| Componente | Papel
 
-=== npm
+| `orchestrator/`
+| Módulo Dagger genérico. Lê `ci/pipeline.toml` e expõe as cinco funções da pipeline.
 
-Dagger module for Node.js/npm projects (Angular). Runs `npm ci`, `npm run build`, optional SonarQube analysis, and publishes the `dist/` output into an nginx container. Supports version override via `package.json` patching and GitLab commit status reporting.
+| `orchestrator-utils/`
+| Utilitários de Git e registry (change detection, bump/commit, tag `sha-<commit>`, checagem e promoção de imagens).
 
-=== maven
+| `maven/`, `npm/`, `uv/`
+| Módulos Dagger por tecnologia de build. Chamados pelo orchestrator, não pelo projeto.
 
-Dagger module for Maven projects. Handles version setting (`versions:set`), build and test (`clean verify`), SonarQube analysis (`sonar:sonar`), and Docker image publishing via the Jib plugin. Supports Maven Wrapper, parent POM installation, multi-module builds, and GitLab commit status reporting.
+| `pipeline/`
+| Biblioteca Go: schema da configuração (`pipeline/config`), orquestração genérica (`PublishAll`, `CheckQuality`) e utilitários compartilhados (`pipeline/sonarargs`, `pipeline/imageref`).
 
-=== uv
+| `gitlabci/`
+| Biblioteca Go: cliente de commit statuses do GitLab.
+|===
 
-Dagger module for Python projects using https://github.com/astral-sh/uv[uv]. Performs two-stage dependency sync (`uv sync`), optional SonarQube analysis, and publishes a slim Python runtime image. Supports build customizations for dlt and dbt projects.
+== O módulo orchestrator
 
-== GitLab Integration
+O `orchestrator` é o módulo Dagger genérico da 3.0. Ele substitui o módulo Dagger por projeto que existia até a 2.x: todo o comportamento vem do arquivo declarativo do projeto consumidor, e os targets declarados lá viram *simultaneamente* as estratégias de build, os checks de qualidade e o mapa de imagens de `check-images`/`promote`.
 
-The `gitlabci/` directory is a standalone Go library (imported as `github.com/BasisTI/daggerverse/gitlabci`) that provides GitLab CI helpers.
+=== Como um projeto usa
 
-=== Commit Statuses
+Um projeto precisa de exatamente dois arquivos.
 
-The `gitlabci.Client` reports pipeline stage progress as commit statuses visible in the GitLab MR/commit UI. It calls `POST /api/v4/projects/:id/statuses/:sha` to transition each stage through `running` -&gt; `success` or `failed`.
+. `ci/pipeline.toml` — os targets do repositório (ver <<schema>>).
+. `.gitlab-ci.yml` — cinco linhas incluindo o template compartilhado:
+
+[source,yaml]
+----
+include:
+  - project: 'devops/ci-templates'
+    ref: v1.0.0
+    file: 'templates/dagger-orchestrator.gitlab-ci.yml'
+----
+
+O template define os stages `check`, `build`, `pre-prod` e `promote`, e chama as funções do orchestrator com as variáveis do GitLab. Duas variáveis podem ser sobrescritas no `variables:` local:
+
+* `DAGGER_MODULE` — default `github.com/BasisTI/daggerverse/orchestrator@3.0.0`. Projetos com build custom apontam para `"."` (módulo local, ver <<custom>>).
+* `PIPELINE_CONFIG` — default `ci/pipeline.toml`.
+
+O construtor do módulo recebe `--source` (raiz do repositório) e `--config-path`:
+
+[source,shell]
+----
+dagger call -m github.com/BasisTI/daggerverse/orchestrator@3.0.0 \
+  --source . --config-path ci/pipeline.toml \
+  validate
+----
+
+=== As cinco funções
+
+==== validate
+
+Carrega e valida o arquivo declarativo e devolve um relatório textual com os targets já resolvidos (com defaults aplicados), o mapa de imagens derivado e eventuais avisos. *Não faz nenhuma chamada de rede* — é o job de lint da configuração, disparado no MR quando `ci/pipeline.toml` muda.
+
+Os avisos cobrem o que é válido no schema mas o orchestrator genérico não consegue executar: targets `type = "custom"` e targets `dockerfile` com `sonar = true`.
+
+==== check-quality
+
+Roda testes e análise estática nos targets alterados que declaram `sonar = true`. Recebe `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, o opcional `--stop-on-first-fail` e a tripla opcional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` para reportar commit statuses.
+
+Builda com a versão fixa `0.0.0-check` (nada é publicado). Falha com mensagem explicativa se a configuração tiver targets custom.
+
+==== publish-all
+
+Detecta os targets alterados entre `--base-branch` e o commit atual, builda e publica cada imagem em `--registry`, aplica a tag `sha-<commit>` e devolve a lista de imagens publicadas (uma por linha).
+
+Se `--git-remote-url` for informado, faz o bump dos arquivos de versão dos targets publicados e commita de volta na `--git-branch` (default `develop`). Também falha se houver targets custom.
+
+==== check-images
+
+Verifica se todas as imagens derivadas da configuração já existem no registry, antes da promoção. Roda no MR para `main`, usando `--build-branch` (default `origin/develop`) para localizar o commit em que as imagens foram construídas.
+
+Targets custom *não* são ignorados aqui: suas imagens existem no registry e precisam ser verificadas como qualquer outra.
+
+==== promote
+
+Promove as imagens derivadas da configuração de `--src-registry` para `--dst-registry` (que, se vazio, é o próprio `--src-registry`). Assim como `check-images`, cobre também as imagens de targets custom.
+
+[[schema]]
+== O schema de `ci/pipeline.toml`
+
+Implementado em `pipeline/config`. O parse é *estrito*: qualquer campo desconhecido é erro.
+
+=== Nível raiz
+
+[cols="1,1,3"]
+|===
+| Campo | Tipo | Descrição
+
+| `schema-version` | int | Obrigatório, hoje sempre `1`.
+| `[project]` | tabela | Metadados do repositório.
+| `[defaults.*]` | tabela | Defaults por tipo de build.
+| `[targets.<nome>]` | tabela | Um bloco por artefato buildável. Ao menos um é obrigatório.
+|===
+
+=== `[project]`
+
+[cols="1,1,3"]
+|===
+| Campo | Tipo | Descrição
+
+| `group` | string | Obrigatório. Grupo no registry: `<registry>/<group>/<image>`.
+|===
+
+=== `[defaults.maven]`, `[defaults.npm]`, `[defaults.uv]`
+
+[cols="1,1,1,3"]
+|===
+| Bloco | Campo | Tipo | Descrição
+
+| `defaults.maven` | `image` | string | Imagem base dos builds Maven.
+| `defaults.maven` | `use-docker` | bool | Liga um daemon Docker no build (Testcontainers).
+| `defaults.npm` | `build-image` | string | Imagem de build (ex: `node:22-alpine`).
+| `defaults.npm` | `run-image` | string | Imagem de runtime (ex: `nginx:alpine`).
+| `defaults.uv` | `build-image` | string | Imagem de build (ex: `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`).
+| `defaults.uv` | `run-image` | string | Imagem de runtime (ex: `python:3.12-slim-bookworm`).
+|===
+
+=== `[targets.<nome>]` — campos comuns
+
+[cols="1,1,3"]
+|===
+| Campo | Tipo | Descrição
+
+| `type` | string
+| Obrigatório. Um de `maven`, `npm`, `uv`, `dockerfile`, `custom`.
+
+| `path` | string
+| Path de change detection. *Default: o nome do target.*
+
+| `source-path` | string
+| Diretório montado no build. *Default:* o `path` efetivo, ou `"."` (raiz do repositório) quando `reactor = true`.
+
+| `image` | string
+| Nome da imagem no registry, sem grupo e sem tag. *Default: o nome do target.* Os nomes efetivos precisam ser únicos entre os targets.
+
+| `version-file` | string
+| Arquivo de versão bumpado pelo `publish-all`. *Default por tipo:* `pom.xml` (maven), `package.json` (npm), `pyproject.toml` (uv e dockerfile). Targets custom não têm default.
+
+| `root-version-file` | bool
+| Indica que `version-file` é relativo à *raiz* do repositório, e não ao `path` do target. Caso típico do reactor Maven multi-módulo, em que vários targets compartilham o `pom.xml` da raiz.
+
+| `extra-trigger-paths` | lista de string
+| Paths adicionais que também disparam o build/check deste target (ex: uma lib compartilhada, o `pom.xml` da raiz).
+
+| `sonar` | bool
+| O target participa do `check-quality`. Não é suportado em targets `dockerfile`.
+|===
+
+=== Campos de `type = "maven"`
+
+[cols="1,1,3"]
+|===
+| Campo | Tipo | Descrição
+
+| `maven-image` | string | Sobrescreve `defaults.maven.image`.
+| `use-docker` | bool | Sobrescreve `defaults.maven.use-docker`.
+| `reactor` | bool | Build multi-módulo: monta a raiz e builda com `-pl <module> -am`. Ver <<reactor>>.
+| `module` | string | Path do módulo dentro do reactor. *Obrigatório quando `reactor = true`.*
+| `extra-options` | lista de string | Opções extras passadas ao `mvn`.
+|===
+
+=== Campos de `type = "uv"`
+
+[cols="1,1,3"]
+|===
+| Campo | Tipo | Descrição
+
+| `uv-build-image` | string | Sobrescreve `defaults.uv.build-image`.
+| `uv-run-image` | string | Sobrescreve `defaults.uv.run-image`.
+| `run-subdir` | string | Subdiretório de execução dentro do build (ex: `"src"`).
+| `customizations` | lista de string | Customizações de build do módulo uv: `"dbt"`, `"dlt"`.
+|===
+
+=== Campos de `type = "dockerfile"`
+
+[cols="1,1,3"]
+|===
+| Campo | Tipo | Descrição
+
+| `dockerfile` | string
+| Path do Dockerfile *relativo ao `source-path` efetivo*. Default `Dockerfile`. Quando `source-path = "."`, precisa trazer o caminho completo a partir da raiz (ex: `apps/judge-api/Dockerfile`).
+|===
+
+`type = "npm"` não tem campos próprios: as imagens vêm exclusivamente de `[defaults.npm]`.
+
+=== Exemplo simples
+
+Quatro targets — três Maven e um frontend Angular — todos com o nome do diretório igual ao nome do target, o que dispensa `path` e `image`:
+
+[source,toml]
+----
+schema-version = 1
+
+[project]
+group = "contavinculada"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-21"
+use-docker = false
+
+[defaults.npm]
+build-image = "node:22-alpine"
+run-image = "nginx:alpine"
+
+[targets.contavinculada]
+type = "maven"
+sonar = true
+
+[targets.integracaosgo]
+type = "maven"
+sonar = true
+
+[targets.snf]
+type = "maven"
+sonar = true
+
+[targets.frontend]
+type = "npm"
+sonar = true
+----
+
+=== Exemplo de reactor Maven multi-módulo
+
+Dois módulos de um mesmo reactor. Ambos montam a raiz (`source-path = "."`), compartilham o `pom.xml` da raiz como arquivo de versão (`root-version-file = true`) e são reconstruídos quando o contrato comum ou o pom da raiz mudam:
+
+[source,toml]
+----
+schema-version = 1
+
+[project]
+group = "triagem"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-25"
+use-docker = true
+
+[targets.triagem-core]
+type = "maven"
+source-path = "."
+reactor = true
+module = "triagem-core"
+version-file = "pom.xml"
+root-version-file = true
+extra-trigger-paths = ["triagem-contracts", "pom.xml"]
+sonar = true
+
+[targets.triagem-ingestao]
+type = "maven"
+source-path = "."
+reactor = true
+module = "triagem-ingestao"
+version-file = "pom.xml"
+root-version-file = true
+extra-trigger-paths = ["triagem-contracts", "pom.xml"]
+sonar = true
+----
+
+Outros exemplos reais estão em `pipeline/config/testdata/`.
+
+== A garantia anti-drift
+
+Esta é a regra central do schema.
+
+O mapa de imagens consumido por `check-images` e `promote` *não é declarado*: ele é derivado dos mesmos targets que descrevem o build, via `Config.ProjectImages()`, que devolve `"<group>/<image efetiva>" -> "<path efetivo>"` para **todos** os targets.
+
+Antes da 3.0, a lista de imagens a verificar e promover era mantida à mão, em paralelo aos build targets do orchestrator do projeto. Bastava adicionar um serviço novo e esquecer da segunda lista para a promoção silenciosamente pular a imagem — ou apontar para uma que não existia mais.
+
+Com uma única fonte de verdade, é impossível divergir: o conjunto do que se builda e o conjunto do que se promove são literalmente a mesma coleção de targets. Targets `type = "custom"` entram no mapa normalmente — eles não são buildados pelo orchestrator genérico, mas suas imagens existem no registry e precisam ser verificadas e promovidas como as outras.
+
+[[custom]]
+== Projetos com build custom
+
+Alguns projetos têm builds que nenhum dos tipos genéricos cobre. Eles mantêm um módulo Dagger próprio, mas **não** duplicam a configuração: esse módulo carrega o *mesmo* `ci/pipeline.toml` via `pipeline/config` e faz o merge dos targets custom implementados à mão com os targets genéricos derivados do arquivo.
+
+No schema, esses targets são marcados com `type = "custom"`:
+
+[source,toml]
+----
+[targets.beneficios]
+type = "maven"
+path = "apps/beneficios"
+sonar = true
+
+[targets.rh-dp]
+type = "custom"
+
+[targets.lightdash-content]
+type = "custom"
+extra-trigger-paths = ["rh-dp/dbtrh"]
+----
+
+O orchestrator genérico não sabe construir esses targets e falha com uma mensagem clara em `publish-all` e `check-quality`, indicando que o projeto precisa apontar `DAGGER_MODULE` para o módulo local. `validate` apenas emite um aviso, e `check-images`/`promote` continuam funcionando pelo módulo genérico, inclusive para as imagens desses targets.
+
+[[reactor]]
+== Modo reactor do Maven
+
+Reactor multi-módulo é o caso em que um módulo depende de módulos irmãos do mesmo `pom.xml` de raiz. Buildar o diretório do módulo isoladamente não funciona: as dependências irmãs não estão no disco.
+
+Com `reactor = true` o módulo `maven` (opção `ReactorMode`):
+
+* monta a *raiz* do reactor em vez do diretório do módulo;
+* builda com `-pl <módulo> -am`, para que o Maven construa o módulo alvo e todos os que ele precisa;
+* injeta `-Drevision=<versão>` em cada invocação, *em vez de rodar `versions:set`*.
+
+O `versions:set` é evitado de propósito: reescrever os POMs brigaria com o flatten-maven-plugin e quebraria a resolução das dependências irmãs que o `-am` acabou de construir.
+
+=== O que o projeto precisa ter no pom
+
+. O `pom.xml` da raiz declara `<version>${revision}</version>` e a property `<revision>` com o número real:
++
+[source,xml]
+----
+<version>${revision}</version>
+<properties>
+  <revision>2025.11.28.42</revision>
+</properties>
+----
+
+. O flatten-maven-plugin configurado, para que os artefatos instalados/publicados tenham a versão resolvida e não o literal `${revision}`.
+
+. O maven-install-plugin ativo no `verify`. *Isso é obrigatório:* o stage do Jib roda sem `-am`, ou seja, sem reconstruir os módulos irmãos — eles precisam já estar no repositório local, instalados pelo stage de build e teste.
+
+O bump de versão acompanha esse modelo: quando o `<version>` do pom é `${revision}`, o `orchestrator-utils` edita a property `<revision>` do pom da *raiz*, e não o elemento `<version>`. É por isso que targets reactor declaram `version-file = "pom.xml"` com `root-version-file = true`.
+
+== Breaking changes da 3.0
+
+=== Módulo `maven`
+
+* `ParentPom` e `FullBuildModules` foram *removidos*. Multi-módulo agora é `ReactorMode` (`reactor = true` no schema), que builda com `-pl <módulo> -am` a partir da raiz. Ver <<reactor>>.
+* O default de `buildImage` deixou de ser a variante `-alpine` e passou a ser `maven:3.9.11-eclipse-temurin-21`. Alpine é baseada em musl e o binário do node que o frontend-maven-plugin baixa é linkado contra glibc, de modo que builds de frontend morriam nela.
+
+=== Biblioteca `pipeline`
+
+* `EntryPointInfo` foi removido do `BuildTarget`. O subdiretório de execução de targets Python passou a ser o campo `run-subdir` da configuração declarativa, repassado ao módulo `uv`.
+* `BuildStrategy` e `QualityStrategy` não carregam mais campos de configuração opacos: as estratégias fecham sobre o target resolvido via closure.
+
+=== `Promote`
+
+* O parâmetro `registryPass` foi renomeado para `registryPassword` (`--registry-password` na CLI), alinhando com `publish-all` e `check-images`.
+
+== Esquema de tags
+
+O repositório usa dois esquemas de tag em paralelo, porque tem dois tipos de artefato.
+
+[cols="1,1,2"]
+|===
+| Artefato | Formato da tag | Exemplo
+
+| Módulos Dagger (`orchestrator`, `orchestrator-utils`, `maven`, `npm`, `uv`)
+| Tag global do repositório, sem prefixo
+| `3.0.0`
+
+| Bibliotecas Go (`pipeline`, `gitlabci`)
+| Tag com prefixo do diretório, exigido pelo Go modules
+| `pipeline/v0.9.1`, `gitlabci/v0.2.1`
+|===
+
+Na prática: `DAGGER_MODULE` referencia `...daggerverse/orchestrator@3.0.0`, enquanto os `go.mod` referenciam `github.com/BasisTI/daggerverse/pipeline v0.9.1`. As duas numerações evoluem independentemente — uma release 3.0.0 dos módulos pode conviver com a `pipeline/v0.9.1`.
+
+== ci.skip
+
+O `publish-all` faz bump dos arquivos de versão e commita de volta na branch. Esse commit *não pode* disparar uma nova pipeline, sob pena de loop infinito.
+
+A supressão é feita *exclusivamente* pelo push option, em `CommitAndPush` (`orchestrator-utils`):
+
+[source,shell]
+----
+git push -o ci.skip <remote> HEAD:<branch>
+----
+
+A mensagem do commit é apenas `Bump versão para <versão>`, *sem* o prefixo `[skip ci]`. O prefixo foi removido de propósito: o `[skip ci]` na mensagem é avaliado pelo GitLab também nas pipelines de merge request, então um MR contendo o commit de bump teria sua pipeline bloqueada — inclusive o `check-quality`. O push option, ao contrário, afeta só o push que o produziu.
+
+O `orchestrator-utils` reconhece os dois formatos ao procurar o commit de build (`--grep=^\[skip ci\]` e `--grep=^Bump versão para `, com `--invert-grep`), de modo que `check-images` e `promote` ignoram commits de bump ao localizar a build branch.
+
+== Integração com o GitLab
+
+O diretório `gitlabci/` é uma biblioteca Go independente (`github.com/BasisTI/daggerverse/gitlabci`).
+
+=== Commit statuses
+
+O `gitlabci.Client` reporta o progresso de cada stage como commit status, visível na UI de MR/commit. Chama `POST /api/v4/projects/:id/statuses/:sha` para transicionar cada stage de `running` para `success` ou `failed`.
 
 [source,go]
 ----
@@ -39,40 +407,57 @@ client := &gitlabci.Client{
 }
 
 client.SetCommitStatus(sha, gitlabci.StateRunning, "my-app: Build", "")
-// ... run stage ...
+// ... roda o stage ...
 client.SetCommitStatus(sha, gitlabci.StateSuccess, "my-app: Build", "")
 ----
 
-=== Usage in npm and maven
+Os nomes seguem o padrão `"{projeto}: {stage}"`, por exemplo `portal-web: Install Dependencies` ou `api-gateway: Docker Build and Push`.
 
-Both modules accept an optional `GitLabConfig` in their `FullBuild` functions. When provided, each pipeline stage is reported as an individual commit status:
+O orchestrator monta o cliente a partir de `--gitlab-host`, `--gitlab-token` e `--gitlab-project-id`. Quando qualquer um deles está ausente, os módulos se comportam exatamente igual, apenas sem reportar statuses.
 
-----
-dagger call full-build \
-  --source . \
-  --commit-sha "$CI_COMMIT_SHA" \
-  --version "1.0.0" \
-  --gitlab-config host="https://gitlab.example.com",token-secret=env:GITLAB_TOKEN,project-id="$CI_PROJECT_ID"
-----
+== Bibliotecas Go
 
-The status names follow the pattern `"{project}: {stage}"`, for example:
+=== `pipeline`
 
-* `portal-web: Install Dependencies`
-* `portal-web: Build Production Bundle`
-* `api-gateway: Build and Test`
-* `api-gateway: Docker Build and Push`
+Orquestração genérica e type-safe. Usa generics para abstrair sobre os tipos do SDK do Dagger, permitindo que orchestrators com versões diferentes do SDK compartilhem a mesma lógica.
 
-When `gitlabConfig` is not provided, the modules behave exactly the same but without reporting statuses.
+* *`BuildStrategy[Dir, Secret]`* / *`QualityStrategy[Dir, Secret]`* — assinaturas que qualquer módulo implementa para se plugar na orquestração.
+* *`DaggerOps[Dir, Secret]`* — callbacks que isolam as operações específicas do SDK (change detection, acesso a diretórios, tagging de imagem).
+* *`PublishAll`* — detecta os projetos alterados, roda suas estratégias de build em sequência, agrega as imagens publicadas e as tageia com `sha-<commit>`.
+* *`CheckQuality`* — roda testes e análise estática nos projetos alterados, com fail-fast opcional.
 
-== Pipeline Library
+==== `pipeline/config`
 
-The `pipeline/` directory is a Go library that provides generic, type-safe pipeline orchestration for multi-project repositories.
+Leitura e validação de `ci/pipeline.toml`, e a derivação anti-drift do mapa de imagens (`ProjectImages`, `ProjectImagesJSON`). Consumido tanto pelo orchestrator genérico quanto pelos módulos custom dos projetos.
 
-It uses Go generics to abstract over Dagger SDK types, allowing different orchestrators to share the same build logic even when they depend on different SDK versions.
+==== `pipeline/sonarargs`
 
-=== Core concepts
+`BuildOptions(host, token, projectKey, waitForQualityGate, extra)` monta as opções `-Dsonar.*` na ordem canônica. Os módulos `maven`, `npm` e `uv` delegam para cá; cada um mantém apenas suas bordas (leitura do `*dagger.Secret` e o tratamento de config nula).
 
-* *`BuildStrategy[Dir, Secret]`* / *`QualityStrategy[Dir, Secret]`* – function signatures that any module can implement to plug into the orchestration.
-* *`DaggerOps[Dir, Secret]`* – a set of callbacks that isolate SDK-specific operations (change detection, directory access, image tagging).
-* *`PublishAll`* – detects changed projects, runs their build strategies sequentially, aggregates published image refs, and tags them with `sha-{commit}`.
-* *`CheckQuality`* – runs tests and static analysis on changed projects, with optional fail-fast behavior.
+==== `pipeline/imageref`
+
+`Ref(registry, group, image, tag)` monta `<registry>/<group>/<image>:<tag>`; `OCILabels(commitSha, version)` devolve os labels `org.opencontainers.image.*` aplicados às imagens publicadas.
+
+== Módulos por tecnologia
+
+Estes módulos são chamados *pelo orchestrator*; um projeto normalmente não os invoca diretamente.
+
+=== maven
+
+Build e teste (`clean verify`), análise Sonar (`sonar:sonar`) e publicação da imagem via plugin Jib. Suporta Maven Wrapper, cache do repositório local, daemon Docker opcional para Testcontainers, modo reactor e reporte de commit statuses.
+
+Fora do modo reactor, a versão é aplicada com `versions:set`; no modo reactor, com `-Drevision`.
+
+=== npm
+
+Projetos Node.js/Angular. Roda `npm ci`, `npm run build`, análise SonarQube opcional e publica o `dist/` em um container nginx. Suporta override de versão via patch do `package.json` e reporte de commit statuses.
+
+=== uv
+
+Projetos Python com https://github.com/astral-sh/uv[uv]. Sync de dependências em dois estágios (`uv sync`), análise SonarQube opcional e publicação de uma imagem Python slim. Suporta `run-subdir` e customizações de build para projetos dlt e dbt.
+
+=== orchestrator-utils
+
+Utilitários de Git e registry usados pelo orchestrator: change detection entre branches, lookup de commit SHA, tagging de imagem com `sha-<commit>`, bump e commit dos arquivos de versão, checagem de existência de imagens e promoção entre registries.
+
+Todas as operações Git rodam dentro de um container `alpine/git`; as operações de imagem usam https://github.com/google/go-containerregistry/tree/main/cmd/crane[crane].

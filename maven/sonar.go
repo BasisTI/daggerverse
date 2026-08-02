@@ -3,37 +3,30 @@ package main
 import (
 	"context"
 	"fmt"
+
+	"github.com/BasisTI/daggerverse/pipeline/sonarargs"
 )
 
 // buildSonarOptions renders the Maven command-line options required to execute Sonar analysis.
+//
+// A montagem da lista fica em pipeline/sonarargs, compartilhada com os módulos
+// npm e uv; aqui ficam apenas as bordas específicas do módulo: config nil vira
+// (nil, nil) e o token é lido do Secret.
 func (m *Maven) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]string, error) {
 	if config == nil {
 		return nil, nil
-	}
-
-	var options []string
-
-	if config.Host != "" {
-		options = append(options, fmt.Sprintf("-Dsonar.host.url=%s", config.Host))
 	}
 
 	token, err := config.TokenSecret.Plaintext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get sonar token: %w", err)
 	}
-	options = append(options, fmt.Sprintf("-Dsonar.token=%s", token))
 
-	if config.ProjectKey != "" {
-		options = append(options, fmt.Sprintf("-Dsonar.projectKey=%s", config.ProjectKey))
-	}
-
-	if config.WaitForQualityGate {
-		options = append(options, "-Dsonar.qualitygate.wait=true")
-	}
-
-	if config.ExtraOptions != nil {
-		options = append(options, config.ExtraOptions...)
-	}
-
-	return options, nil
+	return sonarargs.BuildOptions(
+		config.Host,
+		token,
+		config.ProjectKey,
+		config.WaitForQualityGate,
+		config.ExtraOptions,
+	), nil
 }
