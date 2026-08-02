@@ -262,6 +262,21 @@ func TestResolveAndVersionFilePath(t *testing.T) {
 		t.Errorf("VersionFilePath = %q", got)
 	}
 
+	// Um target que monta a raiz do repo (workspace uv) ainda tem o arquivo de
+	// versão dentro do próprio Path — resolver contra o SourcePath devolveria o
+	// pyproject.toml da raiz e faria o bump no arquivo errado.
+	kaizenstat := loadFixture(t, "kaizenstat")
+	workspace, err := kaizenstat.Resolve("hiring_vagas_update")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if workspace.SourcePath != RepoRoot {
+		t.Fatalf("fixture mudou: SourcePath = %q, esperado %q", workspace.SourcePath, RepoRoot)
+	}
+	if got, want := workspace.VersionFilePath(), "scripts/hiring_vagas_update/pyproject.toml"; got != want {
+		t.Errorf("VersionFilePath (mount raiz) = %q, quer %q", got, want)
+	}
+
 	if _, err := licitacao.Resolve("inexistente"); err == nil {
 		t.Error("Resolve de target inexistente deveria falhar")
 	}

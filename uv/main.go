@@ -36,13 +36,17 @@ func New(
 	// +optional
 	runSubdir string,
 	// +default=true
-	useCache bool) *Uv {
+	useCache bool,
+	// Build container customizations. Valid values: "dbt" and "dlt".
+	// +optional
+	customizations []string) *Uv {
 	return &Uv{
-		BuildImage: buildImage,
-		RunImage:   runImage,
-		RunSubdir:  runSubdir,
-		UseCache:   useCache,
-		Source:     source,
+		BuildImage:     buildImage,
+		RunImage:       runImage,
+		RunSubdir:      runSubdir,
+		UseCache:       useCache,
+		Source:         source,
+		Customizations: customizations,
 	}
 }
 

@@ -180,6 +180,10 @@ type ResolvedTarget struct {
 
 // VersionFilePath retorna o path do arquivo de versão relativo à raiz do repo,
 // ou "" se o target não tem arquivo de versão.
+//
+// O arquivo de versão acompanha o projeto (Path), não o diretório montado para o
+// build (SourcePath): um target com SourcePath "." — workspace uv, reactor Maven —
+// ainda tem seu pyproject.toml/pom.xml dentro do próprio Path.
 func (rt ResolvedTarget) VersionFilePath() string {
 	if rt.VersionFile == "" {
 		return ""
@@ -187,10 +191,10 @@ func (rt ResolvedTarget) VersionFilePath() string {
 	if rt.RootVersionFile {
 		return rt.VersionFile
 	}
-	if rt.SourcePath == RepoRoot || rt.SourcePath == "" {
+	if rt.Path == RepoRoot || rt.Path == "" {
 		return rt.VersionFile
 	}
-	return rt.SourcePath + "/" + rt.VersionFile
+	return rt.Path + "/" + rt.VersionFile
 }
 
 // Load faz o parse do TOML em modo estrito (campo desconhecido = erro) e valida
