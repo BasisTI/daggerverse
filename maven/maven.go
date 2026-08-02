@@ -6,6 +6,7 @@ import (
 	"dagger/maven/internal/dagger"
 	"encoding/xml"
 	"fmt"
+	"strings"
 )
 
 // DefaultMavenCacheName identifies the cache volume used for the Maven local repository.
@@ -13,6 +14,10 @@ const (
 	DefaultMavenCacheName = "maven-cache"
 	// BaseWorkdir is the working directory inside the container where builds are executed.
 	BaseWorkdir = "/app"
+	// RevisionPlaceholder is the CI-friendly versioning placeholder a reactor parent POM declares
+	// as its <version>. The real value lives in the <revision> property and is overridden per build
+	// with -Drevision=<version>, which is what flatten-maven-plugin resolves at install time.
+	RevisionPlaceholder = "${revision}"
 )
 
 var DefaultDockerHosts = []string{"registry-1.docker.io", "registry.hub.docker.com", "quay.io", "ghcr.io"}
@@ -22,6 +27,10 @@ type pomProject struct {
 	XMLName xml.Name `xml:"project"`
 	// Version captures the content of the <version> tag.
 	Version string `xml:"version"`
+	// Properties captures the <properties> block, needed to resolve ${revision} versions.
+	Properties struct {
+		Revision string `xml:"revision"`
+	} `xml:"properties"`
 }
 
 // Maven models the configuration and reusable container used to run Maven-based builds.
@@ -36,8 +45,8 @@ type Maven struct {
 	UseDefaultCiOptions bool
 	// Extra maven options, for example properties: "-Dmyprop=1"
 	ExtraOptions []string
-	// Optional Parent POM for multi-modules buils
-	ParentPom *dagger.File
+	// Build the target module from the reactor root instead of in isolation
+	ReactorMode bool
 	// Container used to run the builds
 	baseContainer *dagger.Container
 	UseJib        bool
@@ -50,8 +59,10 @@ var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.fai
 
 // New constructs a Maven helper ready to execute builds with the provided base options.
 func New(
-	// image for executing Builds
-	// +default="maven:3.9.9-eclipse-temurin-21-alpine"
+	// image for executing Builds. The default is deliberately not the -alpine variant: alpine is
+	// musl-based and the node binary frontend-maven-plugin downloads is glibc-linked, so frontend
+	// builds die on it.
+	// +default="maven:3.9.11-eclipse-temurin-21"
 	buildImage string,
 	// Use Maven Wrapper
 	// +default=false
@@ -65,9 +76,11 @@ func New(
 	// Extra maven options, for example properties: "-Dmyprop=1"
 	// +optional
 	extraOptions []string,
-	// Parent Pom if multi-module project
-	// +optional
-	parentPom *dagger.File,
+	// Build the target module from the reactor root, with -pl and -am, instead of mounting the
+	// module alone. Required by multi-module projects whose modules depend on sibling modules, and
+	// by parents that version themselves through a revision property.
+	// +default=false
+	reactorMode bool,
 	// +default=true
 	useJib bool,
 	// Bind a Docker daemon to the build. Required by test suites that use Testcontainers: the
@@ -81,14 +94,14 @@ func New(
 		UseCache:            useCache,
 		UseDefaultCiOptions: useDefaultCiOptions,
 		ExtraOptions:        extraOptions,
-		ParentPom:           parentPom,
+		ReactorMode:         reactorMode,
 		UseJib:              useJib,
 		UseDocker:           useDocker,
 	}
 	return m
 }
 
-// NewBaseContainer initializes the base container with caches and optional parent POM installation.
+// NewBaseContainer initializes the base container with caches and the optional Docker daemon.
 func (m *Maven) NewBaseContainer() *dagger.Container {
 	container := dag.Container().From(m.Image).WithWorkdir(BaseWorkdir)
 	if m.UseCache {
@@ -96,12 +109,6 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 	}
 	if m.UseDocker {
 		container = m.withDocker(container)
-	}
-	if m.ParentPom != nil {
-		container = container.
-			WithFile(fmt.Sprintf("%s/%s", BaseWorkdir, "pom.xml"), m.ParentPom).
-			WithWorkdir(BaseWorkdir).
-			WithExec(m.getFullMvnModuleCommand([]string{"-N"}, []string{"install"}))
 	}
 	return container
 }
@@ -137,7 +144,11 @@ func (m *Maven) getFullMvnModuleCommand(moduleOptions []string, goals []string) 
 	return append(execCmd, goals...)
 }
 
-// GetVersion reads the module pom.xml (falling back to the parent POM) and returns the version value.
+// GetVersion reads pom.xml from the given directory and returns the project version.
+//
+// In reactor mode the directory is the reactor root, so the POM read here is the parent that
+// declares the version for the whole build; a <version>${revision}</version> there is resolved
+// against the <revision> property, which is where CI-friendly reactors keep the actual number.
 func (m *Maven) GetVersion(ctx context.Context, moduleDir *dagger.Directory) (string, error) {
 	if moduleDir == nil {
 		return "", fmt.Errorf("cannot get version: maven directory is not set")
@@ -146,15 +157,20 @@ func (m *Maven) GetVersion(ctx context.Context, moduleDir *dagger.Directory) (st
 	if err != nil {
 		return "", err
 	}
-	if project.Version == "" {
-		if m.ParentPom != nil {
-			project, err = m.readProject(ctx, m.ParentPom)
-		}
-		if err != nil || project.Version == "" {
-			return "", fmt.Errorf("could not find a <version> tag inside the <project> tag in pom.xml or Parent")
-		}
+	version := strings.TrimSpace(project.Version)
+	if version == "" {
+		return "", fmt.Errorf("could not find a <version> tag inside the <project> tag in pom.xml")
 	}
-	return project.Version, nil
+	if m.ReactorMode && version == RevisionPlaceholder {
+		revision := strings.TrimSpace(project.Properties.Revision)
+		if revision == "" {
+			return "", fmt.Errorf(
+				"pom.xml declares <version>%s</version> but no <revision> property under <properties>",
+				RevisionPlaceholder)
+		}
+		return revision, nil
+	}
+	return version, nil
 }
 
 // GetVersionOrDefault returns the module version or the provided default when it cannot be resolved.

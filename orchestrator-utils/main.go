@@ -11,6 +11,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -305,39 +306,80 @@ func (u *OrchestratorUtils) TagAndPush(
 	return nil
 }
 
-// bumpPomVersion substitui a versão do projeto num pom.xml usando o XML decoder.
-// Encontra a primeira <version> filha direta de <project> (depth 2) e a substitui,
+// revisionPlaceholder é o valor que um reactor Maven "CI-friendly" coloca em <version>: a versão
+// real vive na property <revision>, resolvida em build time por -Drevision / flatten-maven-plugin.
+const revisionPlaceholder = "${revision}"
+
+// bumpPomVersion substitui a versão do projeto num pom.xml usando o XML decoder,
 // preservando toda a formatação original do arquivo.
+//
+// Encontra a <version> filha direta de <project>. Se ela for o placeholder ${revision},
+// substitui a property <revision> em vez do placeholder — reescrever o placeholder quebraria
+// o reactor, que depende dele para propagar a versão aos módulos.
 func bumpPomVersion(content, version string) (string, error) {
+	oldVersion, found, err := findPomElement(content, "project", "version")
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("pom.xml: no project <version> found")
+	}
+
+	if strings.TrimSpace(oldVersion) != revisionPlaceholder {
+		return replacePomElement(content, "version", oldVersion, version)
+	}
+
+	oldRevision, found, err := findPomElement(content, "project", "properties", "revision")
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf(
+			"pom.xml: <version>%s</version> requires a <revision> property under <properties>",
+			revisionPlaceholder)
+	}
+	return replacePomElement(content, "revision", oldRevision, version)
+}
+
+// findPomElement devolve o conteúdo textual do primeiro elemento cujo caminho completo
+// corresponde a path (ex: project/properties/revision).
+func findPomElement(content string, path ...string) (string, bool, error) {
 	decoder := xml.NewDecoder(strings.NewReader(content))
-	depth := 0
+	var stack []string
 	for {
 		tok, err := decoder.Token()
 		if err != nil {
-			return "", fmt.Errorf("pom.xml: no project <version> found")
+			// EOF ou XML malformado: para o efeito do bump, o elemento simplesmente não está lá.
+			return "", false, nil
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			depth++
-			if depth == 2 && t.Name.Local == "version" {
-				// Ler o conteúdo atual da tag
-				var oldVersion string
-				if err := decoder.DecodeElement(&oldVersion, &t); err != nil {
-					return "", fmt.Errorf("pom.xml: failed to decode <version>: %w", err)
+			stack = append(stack, t.Name.Local)
+			if slices.Equal(stack, path) {
+				var value string
+				if err := decoder.DecodeElement(&value, &t); err != nil {
+					return "", false, fmt.Errorf("pom.xml: failed to decode <%s>: %w", t.Name.Local, err)
 				}
-				// Substituir apenas esta ocorrência no conteúdo original
-				target := "<version>" + oldVersion + "</version>"
-				idx := strings.Index(content, target)
-				if idx < 0 {
-					return "", fmt.Errorf("pom.xml: could not locate <version>%s</version> in source", oldVersion)
-				}
-				replacement := "<version>" + version + "</version>"
-				return content[:idx] + replacement + content[idx+len(target):], nil
+				return value, true, nil
 			}
 		case xml.EndElement:
-			depth--
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
 		}
 	}
+}
+
+// replacePomElement troca o conteúdo da primeira ocorrência de <tag>oldValue</tag> no texto
+// original, preservando indentação, comentários e o resto do arquivo intactos.
+func replacePomElement(content, tag, oldValue, newValue string) (string, error) {
+	target := "<" + tag + ">" + oldValue + "</" + tag + ">"
+	idx := strings.Index(content, target)
+	if idx < 0 {
+		return "", fmt.Errorf("pom.xml: could not locate <%s>%s</%s> in source", tag, oldValue, tag)
+	}
+	replacement := "<" + tag + ">" + newValue + "</" + tag + ">"
+	return content[:idx] + replacement + content[idx+len(target):], nil
 }
 
 // bumpPackageJsonVersion substitui a versão num package.json usando encoding/json.
@@ -440,7 +482,7 @@ func (u *OrchestratorUtils) BumpAndCommitVersions(
 	versionFiles []string,
 	// Nova versão a aplicar.
 	version string,
-	// Mensagem do commit (será prefixada com [skip ci]).
+	// Mensagem do commit.
 	message string,
 	// Branch de destino para o push.
 	branch string,

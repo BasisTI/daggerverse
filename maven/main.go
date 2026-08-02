@@ -10,38 +10,14 @@ import (
 	"github.com/BasisTI/daggerverse/gitlabci"
 )
 
-// FullBuildModules orchestrates build, test, Sonar analysis, and image publishing for each module in order.
-func (m *Maven) FullBuildModules(
-	ctx context.Context,
-	source *dagger.Directory,
-// Digest do commit atual (sha completo)
-	commitSha string,
-// Versão da aplicação no formato CalVer.BuildNumber
-	version string,
-	modules []string,
-// +optional
-	sonarConfig *SonarConfig,
-// +optional
-	dockerConfig *DockerBuildConfig,
-// GitLab configuration for reporting commit statuses
-// +optional
-	gitlabConfig *GitLabConfig,
-) ([]*ModuleBuildResult, error) {
-	results := make([]*ModuleBuildResult, 0)
-	for _, module := range modules {
-		result, err := m.FullBuild(ctx, source, module, commitSha, version, sonarConfig, dockerConfig, gitlabConfig)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, result)
-	}
-	return results, nil
-}
-
 // FullBuild executes the three-stage pipeline (build/test, Sonar, Docker publish) for a single Maven module.
+//
+// With ReactorMode off, source is the module directory itself and the module is built in
+// isolation. With ReactorMode on, source is the reactor root and module is the path of the
+// target module inside it.
 func (m *Maven) FullBuild(ctx context.Context,
 	source *dagger.Directory,
-// Module name
+// Module name. In reactor mode, the module path relative to the reactor root.
 	module string,
 // Digest do commit atual (sha completo)
 	commitSha string,
@@ -56,16 +32,30 @@ func (m *Maven) FullBuild(ctx context.Context,
 	gitlabConfig *GitLabConfig,
 ) (*ModuleBuildResult, error) {
 
-	stages := []PipelineStage{
-		{
-			DisplayName: "Set version",
-			Goals:       []string{"versions:set"},
-			Options:     []string{"-DnewVersion=" + version, "-DgenerateBackupPoms=false"},
-		},
-		{
-			DisplayName: "Build and Test",
-			Goals:       []string{"clean", "verify"},
-		},
+	var stages []PipelineStage
+	if m.ReactorMode {
+		// No versions:set here. A CI-friendly reactor versions itself through ${revision}, so the
+		// POMs are left untouched and every invocation carries -Drevision instead — rewriting the
+		// POMs would fight flatten-maven-plugin and break the sibling dependencies -am resolves.
+		stages = []PipelineStage{
+			{
+				DisplayName: "Build and Test",
+				Goals:       []string{"clean", "verify"},
+				Options:     reactorOptions(module, version, "-am"),
+			},
+		}
+	} else {
+		stages = []PipelineStage{
+			{
+				DisplayName: "Set version",
+				Goals:       []string{"versions:set"},
+				Options:     []string{"-DnewVersion=" + version, "-DgenerateBackupPoms=false"},
+			},
+			{
+				DisplayName: "Build and Test",
+				Goals:       []string{"clean", "verify"},
+			},
+		}
 	}
 
 	if sonarConfig != nil {
@@ -73,14 +63,22 @@ func (m *Maven) FullBuild(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
+		if m.ReactorMode {
+			sonarStage.Options = append(reactorOptions(module, version), sonarStage.Options...)
+		}
 		stages = append(stages, sonarStage)
 	}
 
+	// Jib is the only publish path this module knows. In reactor mode UseJib gates it explicitly, so
+	// a reactor whose target module carries no jib plugin can still run build and Sonar.
 	imageUrl := ""
-	if dockerConfig != nil {
+	if dockerConfig != nil && (!m.ReactorMode || m.UseJib) {
 		dockerStage, err := m.configureDockerPublish(ctx, dockerConfig, commitSha, version)
 		if err != nil {
 			return nil, err
+		}
+		if m.ReactorMode {
+			dockerStage.Options = append(reactorOptions(module, version), dockerStage.Options...)
 		}
 		stages = append(stages, dockerStage)
 		imageUrl = dockerConfig.fullImageReference()
@@ -105,6 +103,13 @@ func (m *Maven) FullBuild(ctx context.Context,
 	}
 	buildResult.ImageUrl = imageUrl
 	return buildResult, nil
+}
+
+// reactorOptions builds the selectors every mvn invocation needs in reactor mode: the target module
+// and the revision that stands in for ${revision} in the parent POM.
+func reactorOptions(module, version string, extra ...string) []string {
+	options := []string{"-pl", module, "-Drevision=" + version}
+	return append(options, extra...)
 }
 
 func (m *Maven) configureDockerPublish(
@@ -148,10 +153,18 @@ func (m *Maven) executeStages(
 	gitlabClient *gitlabci.Client,
 	commitSha string,
 ) (*ModuleBuildResult, error) {
-	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)
+	// Outside reactor mode `source` is the module itself, mounted under its own name. In reactor
+	// mode `source` is the whole reactor: -pl/-am need every sibling module on disk, so the root is
+	// mounted at /app and that is also where mvn runs from.
+	mountPath := fmt.Sprintf("%s/%s", BaseWorkdir, module)
+	excludes := []string{"target"}
+	if m.ReactorMode {
+		mountPath = BaseWorkdir
+		excludes = []string{"target", "**/target"}
+	}
 	stageContainer := m.Container().
-		WithDirectory(moduleDir, source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"target"}}).
-		WithWorkdir(moduleDir)
+		WithDirectory(mountPath, source, dagger.ContainerWithDirectoryOpts{Exclude: excludes}).
+		WithWorkdir(mountPath)
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
 		statusName := ""
