@@ -1,0 +1,28 @@
+schema-version = 1
+
+[project]
+group = "contavinculada"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-21"
+use-docker = false
+
+[defaults.npm]
+build-image = "node:22-alpine"
+run-image = "nginx:alpine"
+
+[targets.contavinculada]
+type = "maven"
+sonar = true
+
+[targets.integracaosgo]
+type = "maven"
+sonar = true
+
+[targets.snf]
+type = "maven"
+sonar = true
+
+[targets.frontend]
+type = "npm"
+sonar = true

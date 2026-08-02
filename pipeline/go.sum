@@ -1,2 +1,4 @@
 github.com/BasisTI/daggerverse/gitlabci v0.2.1 h1:IFZ9p/7uQ4W9qC0PGgGf7Y1ihe0RLz0g0M235OuIejw=
 github.com/BasisTI/daggerverse/gitlabci v0.2.1/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
+github.com/pelletier/go-toml/v2 v2.4.3 h1:GTRvJQutkOSftxIFD5xw9aepkYNuPWmVJpffdDPYVpY=
+github.com/pelletier/go-toml/v2 v2.4.3/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=

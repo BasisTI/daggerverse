@@ -1,0 +1,25 @@
+schema-version = 1
+
+[project]
+group = "colaboradados"
+
+[defaults.maven]
+image = "maven:3.9.11-eclipse-temurin-21"
+
+[targets.beneficios]
+type = "maven"
+path = "apps/beneficios"
+sonar = true
+
+[targets.rh-dp]
+type = "custom"
+
+[targets.comercial]
+type = "custom"
+
+[targets.financeiro]
+type = "custom"
+
+[targets.lightdash-content]
+type = "custom"
+extra-trigger-paths = ["rh-dp/dbtrh"]

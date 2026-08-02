@@ -1,0 +1,479 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func loadFixture(t *testing.T, name string) *Config {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name+".toml"))
+	if err != nil {
+		t.Fatalf("ler fixture %s: %v", name, err)
+	}
+	cfg, err := Load(data)
+	if err != nil {
+		t.Fatalf("Load(%s): %v", name, err)
+	}
+	return cfg
+}
+
+// TestFixturesProjectImages é o teste-chave anti-drift: ProjectImages() deve
+// cobrir EXATAMENTE os targets declarados — todos presentes, nada além.
+func TestFixturesProjectImages(t *testing.T) {
+	tests := []struct {
+		fixture string
+		group   string
+		images  map[string]string
+	}{
+		{
+			fixture: "contavinculada",
+			group:   "contavinculada",
+			images: map[string]string{
+				"contavinculada/contavinculada": "contavinculada",
+				"contavinculada/integracaosgo":  "integracaosgo",
+				"contavinculada/snf":            "snf",
+				"contavinculada/frontend":       "frontend",
+			},
+		},
+		{
+			fixture: "licitacao",
+			group:   "licitacao",
+			images: map[string]string{
+				"licitacao/licitacao":           "licitacao",
+				"licitacao/integracao":          "integracao",
+				"licitacao/frontend":            "frontend",
+				"licitacao/processos_judiciais": "scrapers/processos_judiciais",
+				"licitacao/painel_licitacoes":   "painel_licitacoes",
+				"licitacao/carga_editais":       "carga_editais",
+				"licitacao/comprasnet_nodriver": "scrapers/comprasnet_nodriver",
+				"licitacao/mte":                 "scrapers/mte",
+				"licitacao/cct_mte":             "scrapers/cct_mte",
+			},
+		},
+		{
+			fixture: "kaizenstat",
+			group:   "kaizenstat",
+			images: map[string]string{
+				"kaizenstat/judge-admin":          "apps/judge-admin",
+				"kaizenstat/judge-api":            "apps/judge-api",
+				"kaizenstat/judge-worker":         "apps/judge-worker",
+				"kaizenstat/judge-scheduler":      "apps/judge-scheduler",
+				"kaizenstat/judge-dashboard":      "apps/judge-dashboard",
+				"kaizenstat/hiring_salary_update": "scripts/hiring_salary_update",
+				"kaizenstat/hiring_vagas_update":  "scripts/hiring_vagas_update",
+			},
+		},
+		{
+			// Targets custom NÃO são buildados pelo orchestrator genérico,
+			// mas continuam existindo no registry e portanto em ProjectImages.
+			fixture: "colaboradados",
+			group:   "colaboradados",
+			images: map[string]string{
+				"colaboradados/beneficios":        "apps/beneficios",
+				"colaboradados/rh-dp":             "rh-dp",
+				"colaboradados/comercial":         "comercial",
+				"colaboradados/financeiro":        "financeiro",
+				"colaboradados/lightdash-content": "lightdash-content",
+			},
+		},
+		{
+			fixture: "triagem",
+			group:   "triagem",
+			images: map[string]string{
+				"triagem/triagem-core":     "triagem-core",
+				"triagem/triagem-ingestao": "triagem-ingestao",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.fixture, func(t *testing.T) {
+			cfg := loadFixture(t, tc.fixture)
+
+			if cfg.Project.Group != tc.group {
+				t.Errorf("group = %q, quer %q", cfg.Project.Group, tc.group)
+			}
+
+			got := cfg.ProjectImages()
+			if !reflect.DeepEqual(got, tc.images) {
+				t.Errorf("ProjectImages() =\n%v\nquer\n%v", got, tc.images)
+			}
+
+			// Nada além dos targets: uma entrada por target, e cada chave
+			// derivada de um nome de target existente.
+			if len(got) != len(cfg.Targets) {
+				t.Errorf("ProjectImages() tem %d entradas para %d targets", len(got), len(cfg.Targets))
+			}
+			for _, name := range cfg.TargetNames() {
+				key := cfg.ImagePath(name)
+				if _, ok := got[key]; !ok {
+					t.Errorf("target %q ausente em ProjectImages() (chave %q)", name, key)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectImagesJSON(t *testing.T) {
+	cfg := loadFixture(t, "triagem")
+	raw, err := cfg.ProjectImagesJSON()
+	if err != nil {
+		t.Fatalf("ProjectImagesJSON: %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("json inválido %q: %v", raw, err)
+	}
+	if !reflect.DeepEqual(got, cfg.ProjectImages()) {
+		t.Errorf("round-trip divergente: %v", got)
+	}
+}
+
+func TestEffectiveValues(t *testing.T) {
+	contavinculada := loadFixture(t, "contavinculada")
+	licitacao := loadFixture(t, "licitacao")
+	kaizenstat := loadFixture(t, "kaizenstat")
+	colaboradados := loadFixture(t, "colaboradados")
+	triagem := loadFixture(t, "triagem")
+
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		// path / source-path / image default = nome do target
+		{"path default", contavinculada.EffectivePath("snf"), "snf"},
+		{"source-path default", contavinculada.EffectiveSourcePath("snf"), "snf"},
+		{"image default", contavinculada.EffectiveImage("snf"), "snf"},
+
+		// path explícito propaga para source-path
+		{"path explícito", licitacao.EffectivePath("processos_judiciais"), "scrapers/processos_judiciais"},
+		{"source-path segue path", licitacao.EffectiveSourcePath("processos_judiciais"), "scrapers/processos_judiciais"},
+
+		// source-path "." separa mount de change detection
+		{"kaizenstat path", kaizenstat.EffectivePath("hiring_vagas_update"), "scripts/hiring_vagas_update"},
+		{"kaizenstat mount raiz", kaizenstat.EffectiveSourcePath("hiring_vagas_update"), RepoRoot},
+
+		// version files por tipo
+		{"vf maven", contavinculada.EffectiveVersionFile("snf"), VersionFileMaven},
+		{"vf npm", contavinculada.EffectiveVersionFile("frontend"), VersionFileNpm},
+		{"vf uv", licitacao.EffectiveVersionFile("painel_licitacoes"), VersionFileUv},
+		{"vf dockerfile", kaizenstat.EffectiveVersionFile("judge-api"), VersionFileUv},
+		{"vf custom", colaboradados.EffectiveVersionFile("rh-dp"), ""},
+		{"vf explícito", triagem.EffectiveVersionFile("triagem-core"), "pom.xml"},
+
+		// maven defaults e overrides
+		{"maven image default", contavinculada.EffectiveMavenImage("snf"), "maven:3.9.11-eclipse-temurin-21"},
+		{"maven image triagem", triagem.EffectiveMavenImage("triagem-core"), "maven:3.9.11-eclipse-temurin-25"},
+		{"use-docker false", contavinculada.EffectiveUseDocker("snf"), false},
+		{"use-docker true", kaizenstat.EffectiveUseDocker("judge-admin"), true},
+		{"use-docker triagem", triagem.EffectiveUseDocker("triagem-ingestao"), true},
+
+		// uv
+		{"uv build image", licitacao.EffectiveUvBuildImage("painel_licitacoes"), "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"},
+		{"uv run image", licitacao.EffectiveUvRunImage("painel_licitacoes"), "python:3.12-slim-bookworm"},
+
+		// npm
+		{"npm build image", contavinculada.EffectiveNpmBuildImage("frontend"), "node:22-alpine"},
+		{"npm run image", contavinculada.EffectiveNpmRunImage("frontend"), "nginx:alpine"},
+
+		// dockerfile
+		{"dockerfile default", licitacao.EffectiveDockerfile("mte"), DefaultDockerfile},
+		{"dockerfile explícito", kaizenstat.EffectiveDockerfile("judge-api"), "apps/judge-api/Dockerfile"},
+
+		// custom targets
+		{"tem custom", colaboradados.HasCustomTargets(), true},
+		{"não tem custom", contavinculada.HasCustomTargets(), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !reflect.DeepEqual(tc.got, tc.want) {
+				t.Errorf("= %v, quer %v", tc.got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReactorSourcePathDefault cobre a regra "reactor => source-path default '.'"
+// mesmo quando o TOML não declara source-path explicitamente.
+func TestReactorSourcePathDefault(t *testing.T) {
+	cfg, err := Load([]byte(`
+schema-version = 1
+[project]
+group = "triagem"
+[targets.triagem-core]
+type = "maven"
+reactor = true
+module = "triagem-core"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.EffectiveSourcePath("triagem-core"); got != RepoRoot {
+		t.Errorf("EffectiveSourcePath = %q, quer %q", got, RepoRoot)
+	}
+	if got := cfg.EffectivePath("triagem-core"); got != "triagem-core" {
+		t.Errorf("EffectivePath = %q, quer %q", got, "triagem-core")
+	}
+}
+
+func TestResolveAndVersionFilePath(t *testing.T) {
+	triagem := loadFixture(t, "triagem")
+	rt, err := triagem.Resolve("triagem-ingestao")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := ResolvedTarget{
+		Name:              "triagem-ingestao",
+		Type:              TypeMaven,
+		Path:              "triagem-ingestao",
+		SourcePath:        RepoRoot,
+		Image:             "triagem-ingestao",
+		VersionFile:       "pom.xml",
+		RootVersionFile:   true,
+		ExtraTriggerPaths: []string{"triagem-contracts", "pom.xml"},
+		Sonar:             true,
+		MavenImage:        "maven:3.9.11-eclipse-temurin-25",
+		UseDocker:         true,
+		Reactor:           true,
+		Module:            "triagem-ingestao",
+		Dockerfile:        DefaultDockerfile,
+	}
+	if !reflect.DeepEqual(rt, want) {
+		t.Errorf("Resolve() =\n%+v\nquer\n%+v", rt, want)
+	}
+	if got := rt.VersionFilePath(); got != "pom.xml" {
+		t.Errorf("VersionFilePath (root) = %q, quer %q", got, "pom.xml")
+	}
+
+	licitacao := loadFixture(t, "licitacao")
+	scraper, err := licitacao.Resolve("processos_judiciais")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := scraper.VersionFilePath(); got != "scrapers/processos_judiciais/pyproject.toml" {
+		t.Errorf("VersionFilePath = %q", got)
+	}
+
+	if _, err := licitacao.Resolve("inexistente"); err == nil {
+		t.Error("Resolve de target inexistente deveria falhar")
+	}
+
+	if n := len(licitacao.ResolveAll()); n != len(licitacao.Targets) {
+		t.Errorf("ResolveAll devolveu %d targets, quer %d", n, len(licitacao.Targets))
+	}
+}
+
+func TestTargetListings(t *testing.T) {
+	licitacao := loadFixture(t, "licitacao")
+
+	if got, want := licitacao.TargetNamesByType(TypeUv), []string{"carga_editais", "painel_licitacoes", "processos_judiciais"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("TargetNamesByType(uv) = %v, quer %v", got, want)
+	}
+	if got, want := licitacao.TargetNamesByType(TypeDockerfile), []string{"cct_mte", "comprasnet_nodriver", "mte"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("TargetNamesByType(dockerfile) = %v, quer %v", got, want)
+	}
+	if got, want := licitacao.SonarTargetNames(), []string{"frontend", "integracao", "licitacao"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("SonarTargetNames = %v, quer %v", got, want)
+	}
+
+	// TargetNames é determinístico (ordenado) apesar do map subjacente.
+	names := licitacao.TargetNames()
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("TargetNames não ordenado: %v", names)
+	}
+
+	contavinculada := loadFixture(t, "contavinculada")
+	if got, want := contavinculada.SonarTargetNames(), contavinculada.TargetNames(); !reflect.DeepEqual(got, want) {
+		t.Errorf("todos os targets de contavinculada deveriam ter sonar: %v", got)
+	}
+
+	colaboradados := loadFixture(t, "colaboradados")
+	if got, want := colaboradados.TargetNamesByType(TypeCustom), []string{"comercial", "financeiro", "lightdash-content", "rh-dp"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("TargetNamesByType(custom) = %v, quer %v", got, want)
+	}
+	if got := colaboradados.Targets["lightdash-content"].ExtraTriggerPaths; !reflect.DeepEqual(got, []string{"rh-dp/dbtrh"}) {
+		t.Errorf("extra-trigger-paths = %v", got)
+	}
+}
+
+func TestLoadErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		toml    string
+		wantErr string
+	}{
+		{
+			name: "schema-version errado",
+			toml: `
+schema-version = 2
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+`,
+			wantErr: "schema-version inválido",
+		},
+		{
+			name: "schema-version ausente",
+			toml: `
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+`,
+			wantErr: "schema-version inválido",
+		},
+		{
+			name: "group vazio",
+			toml: `
+schema-version = 1
+[project]
+group = ""
+[targets.a]
+type = "maven"
+`,
+			wantErr: "project.group é obrigatório",
+		},
+		{
+			name: "sem targets",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+`,
+			wantErr: "ao menos um target",
+		},
+		{
+			name: "type inválido",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "gradle"
+`,
+			wantErr: `type "gradle" inválido`,
+		},
+		{
+			name: "type ausente",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+path = "apps/a"
+`,
+			wantErr: "type é obrigatório",
+		},
+		{
+			name: "reactor sem module",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+reactor = true
+`,
+			wantErr: "reactor = true exige module",
+		},
+		{
+			name: "imagem duplicada",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+image = "app"
+[targets.b]
+type = "npm"
+image = "app"
+`,
+			wantErr: `imagem "app" duplicada`,
+		},
+		{
+			name: "imagem duplicada por default de nome",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.app]
+type = "maven"
+[targets.b]
+type = "npm"
+image = "app"
+`,
+			wantErr: `imagem "app" duplicada`,
+		},
+		{
+			name: "campo desconhecido",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+usedocker = true
+`,
+			wantErr: "parse pipeline config",
+		},
+		{
+			name: "seção desconhecida",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[defaults.gradle]
+image = "gradle"
+[targets.a]
+type = "maven"
+`,
+			wantErr: "parse pipeline config",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load([]byte(tc.toml))
+			if err == nil {
+				t.Fatalf("esperava erro contendo %q, obteve nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("erro = %q, esperava conter %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestUseDockerPointerDistinguishesAbsent(t *testing.T) {
+	cfg, err := Load([]byte(`
+schema-version = 1
+[project]
+group = "x"
+[defaults.maven]
+use-docker = true
+[targets.a]
+type = "maven"
+[targets.b]
+type = "maven"
+use-docker = false
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.EffectiveUseDocker("a") {
+		t.Error("target sem use-docker deveria herdar o default true")
+	}
+	if cfg.EffectiveUseDocker("b") {
+		t.Error("target com use-docker = false deveria sobrescrever o default")
+	}
+}

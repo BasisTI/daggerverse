@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/BasisTI/daggerverse/gitlabci"
 )
+
+// triggerSeparator separa o nome real de um target do sufixo sintético usado
+// para registrar seus ExtraTriggerPaths no mapa de change detection.
+const triggerSeparator = "##trigger"
 
 func setStatus(client *gitlabci.Client, sha string, state gitlabci.State, name string) {
 	if client == nil {
@@ -18,8 +23,65 @@ func setStatus(client *gitlabci.Client, sha string, state gitlabci.State, name s
 	}
 }
 
+// addTriggerPaths registra entradas sintéticas "<nome>##trigger<i>" -> path no
+// ProjectConfig, uma por ExtraTriggerPath. Como GetChangedProjects trabalha com
+// um mapa nome -> path, essa é a forma genérica de fazer um target ser disparado
+// por mais de um path (trigger cruzado).
+func addTriggerPaths(cfg ProjectConfig, name string, extraPaths []string) {
+	for i, path := range extraPaths {
+		if path == "" {
+			continue
+		}
+		cfg[name+triggerSeparator+strconv.Itoa(i)] = path
+	}
+}
+
+// normalizeTargetNames remove os sufixos sintéticos de trigger dos nomes
+// devolvidos por GetChangedProjects e deduplica preservando a ordem original.
+func normalizeTargetNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if idx := strings.Index(name, triggerSeparator); idx >= 0 {
+			name = name[:idx]
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// changedTargets monta o JSON de paths (com triggers sintéticos), consulta
+// GetChangedProjects e normaliza o resultado de volta para os nomes reais.
+func changedTargets[Dir any](
+	ctx context.Context,
+	getChangedProjects func(ctx context.Context, source Dir, baseBranch, pathsJson string) ([]string, error),
+	projectCfg ProjectConfig,
+	source Dir,
+	baseBranch string,
+) ([]string, error) {
+	pathsJson, err := json.Marshal(projectCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := getChangedProjects(ctx, source, baseBranch, string(pathsJson))
+	if err != nil {
+		return nil, err
+	}
+
+	return normalizeTargetNames(raw), nil
+}
+
 // PublishAll constrói e publica as imagens de todos os projetos alterados.
 // Retorna um PublishResult com as imagens publicadas e os arquivos de versão dos projetos alterados.
+//
+// O diretório entregue a cada BuildStrategy é ops.GetSubDirectory(source, mountPath),
+// onde mountPath é o MountPath efetivo do target. A implementação de
+// GetSubDirectory DEVE tratar o valor RepoRoot (".") devolvendo o próprio source.
 func PublishAll[Dir any, Secret any](
 	ctx context.Context,
 	ops DaggerOps[Dir, Secret],
@@ -31,14 +93,10 @@ func PublishAll[Dir any, Secret any](
 	projectCfg := make(ProjectConfig, len(buildTargets))
 	for name, target := range buildTargets {
 		projectCfg[name] = target.SourcePath(name)
+		addTriggerPaths(projectCfg, name, target.ExtraTriggerPaths)
 	}
 
-	pathsJson, err := json.Marshal(projectCfg)
-	if err != nil {
-		return PublishResult{}, err
-	}
-
-	targets, err := ops.GetChangedProjects(ctx, source, baseBranch, string(pathsJson))
+	targets, err := changedTargets(ctx, ops.GetChangedProjects, projectCfg, source, baseBranch)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -52,6 +110,7 @@ func PublishAll[Dir any, Secret any](
 
 	var sb strings.Builder
 	var versionFiles []string
+	seenVersionFiles := make(map[string]bool)
 	for _, targetName := range targets {
 		target, exists := buildTargets[targetName]
 		if !exists {
@@ -60,8 +119,8 @@ func PublishAll[Dir any, Secret any](
 		statusName := targetName + ": Build"
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
 		fmt.Printf("🚀 [Build] Iniciando: %s (v%s)\n", targetName, version)
-		dir := target.SourcePath(targetName)
-		img, err := target.Build(ctx, ops.GetSubDirectory(source, dir), targetName, commitSha, version, registry, registryUser, registryPassword, target.EntryPointInfo)
+		mount := target.EffectiveMountPath(targetName)
+		img, err := target.Build(ctx, ops.GetSubDirectory(source, mount), targetName, commitSha, version, registry, registryUser, registryPassword)
 		if err != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
 			return PublishResult{}, fmt.Errorf("falha no build de %s: %w", targetName, err)
@@ -69,8 +128,11 @@ func PublishAll[Dir any, Secret any](
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateSuccess, statusName)
 		sb.WriteString(img + "\n")
 
-		if target.VersionFile != "" {
-			versionFiles = append(versionFiles, dir+"/"+target.VersionFile)
+		// Vários targets reactor compartilham o pom.xml da raiz: deduplicamos
+		// para que o bump de versão aconteça uma única vez por arquivo.
+		if vf := target.VersionFilePath(targetName); vf != "" && !seenVersionFiles[vf] {
+			seenVersionFiles[vf] = true
+			versionFiles = append(versionFiles, vf)
 		}
 	}
 
@@ -88,6 +150,10 @@ func PublishAll[Dir any, Secret any](
 }
 
 // CheckQuality roda testes e análise estática (Sonar) nos projetos alterados.
+//
+// Assim como em PublishAll, o diretório entregue a cada QualityStrategy é o
+// MountPath efetivo do target, e GetSubDirectory deve tratar RepoRoot (".")
+// devolvendo o próprio source.
 func CheckQuality[Dir any, Secret any](
 	ctx context.Context,
 	ops DaggerOps[Dir, Secret],
@@ -100,14 +166,10 @@ func CheckQuality[Dir any, Secret any](
 	projectCfg := make(ProjectConfig, len(qualityTargets))
 	for name, target := range qualityTargets {
 		projectCfg[name] = target.SourcePath(name)
+		addTriggerPaths(projectCfg, name, target.ExtraTriggerPaths)
 	}
 
-	pathsJson, err := json.Marshal(projectCfg)
-	if err != nil {
-		return err
-	}
-
-	targets, err := ops.GetChangedProjects(ctx, source, baseBranch, string(pathsJson))
+	targets, err := changedTargets(ctx, ops.GetChangedProjects, projectCfg, source, baseBranch)
 	if err != nil {
 		return err
 	}
@@ -126,12 +188,15 @@ func CheckQuality[Dir any, Secret any](
 	var failures []qualityFailure
 
 	for _, targetName := range targets {
-		target := qualityTargets[targetName]
-		dir := target.SourcePath(targetName)
+		target, exists := qualityTargets[targetName]
+		if !exists {
+			return fmt.Errorf("serviço '%s' alterado mas sem check de qualidade definido", targetName)
+		}
+		mount := target.EffectiveMountPath(targetName)
 		statusName := targetName + ": Quality"
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
 		fmt.Printf("🔍 [Quality] Verificando: %s\n", targetName)
-		if checkErr := target.Check(ctx, ops.GetSubDirectory(source, dir), targetName, sonarHost, sonarToken); checkErr != nil {
+		if checkErr := target.Check(ctx, ops.GetSubDirectory(source, mount), targetName, sonarHost, sonarToken); checkErr != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
 			if stopOnFirstFail {
 				return fmt.Errorf("quality gate falhou para %s: %w", targetName, checkErr)
