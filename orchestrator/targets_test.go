@@ -1,6 +1,7 @@
 package main
 
 import (
+	"dagger/orchestrator/internal/dagger"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -387,5 +388,48 @@ func TestGetSubDirectoryTreatsRepoRoot(t *testing.T) {
 	}
 	if got := getSubDirectory(source, "apps/foo"); got == source {
 		t.Error("getSubDirectory(source, \"apps/foo\") deveria devolver um subdiretório")
+	}
+}
+
+// TestNewGitLabClientRequiresFullConfig cobre o caminho em que o reporte de
+// commit status é simplesmente desligado: com qualquer uma das três partes da
+// configuração ausente, PublishAll e CheckQuality seguem rodando sem GitLab em
+// vez de falhar. Este comportamento era testado no módulo de cada projeto até a
+// 2.x; ao centralizar o código aqui, o teste veio junto.
+func TestNewGitLabClientRequiresFullConfig(t *testing.T) {
+	ctx := t.Context()
+	token := dag.SetSecret("gitlab-token-teste", "s3cr3t")
+
+	for _, tc := range []struct {
+		nome      string
+		host      string
+		token     *dagger.Secret
+		projectID string
+	}{
+		{"sem host", "", token, "42"},
+		{"sem token", "https://git.basis.com.br", nil, "42"},
+		{"sem project id", "https://git.basis.com.br", token, ""},
+		{"nada", "", nil, ""},
+	} {
+		t.Run(tc.nome, func(t *testing.T) {
+			client, err := newGitLabClient(ctx, tc.host, tc.token, tc.projectID)
+			if err != nil {
+				t.Fatalf("configuração incompleta não deveria falhar: %v", err)
+			}
+			if client != nil {
+				t.Errorf("esperado client nil, veio %+v", client)
+			}
+		})
+	}
+
+	client, err := newGitLabClient(ctx, "https://git.basis.com.br", token, "42")
+	if err != nil {
+		t.Fatalf("configuração completa: %v", err)
+	}
+	if client == nil {
+		t.Fatal("configuração completa deveria produzir um client")
+	}
+	if client.BaseURL != "https://git.basis.com.br" || client.ProjectID != "42" || client.Token != "s3cr3t" {
+		t.Errorf("client mal montado: %+v", client)
 	}
 }
