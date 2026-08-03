@@ -110,6 +110,12 @@ type Target struct {
 	ExtraTriggerPaths []string `toml:"extra-trigger-paths"`
 	// Sonar indica que o target participa do CheckQuality.
 	Sonar bool `toml:"sonar"`
+	// QualityType declara com que build system o CÓDIGO do target é analisado,
+	// independentemente de como sua IMAGEM é construída. Existe para o caso em
+	// que os dois divergem: uma imagem construída por Dockerfile próprio cujo
+	// código-fonte é, ainda assim, um projeto uv/maven/npm com testes e análise
+	// estática. Vazio significa "o mesmo que type" (ver EffectiveQualityType).
+	QualityType TargetType `toml:"quality-type"`
 
 	// --- maven ---
 
@@ -147,6 +153,9 @@ type Target struct {
 type ResolvedTarget struct {
 	Name string
 	Type TargetType
+	// QualityType é o build system usado no check de qualidade. Nunca é vazio:
+	// quando o target não declara `quality-type`, é igual a Type.
+	QualityType TargetType
 
 	Path              string
 	SourcePath        string
@@ -156,7 +165,7 @@ type ResolvedTarget struct {
 	ExtraTriggerPaths []string
 	Sonar             bool
 
-	// MavenImage e UseDocker só são significativos para Type == TypeMaven.
+	// MavenImage e UseDocker só são significativos para Type/QualityType == TypeMaven.
 	MavenImage   string
 	UseDocker    bool
 	Reactor      bool
@@ -164,13 +173,13 @@ type ResolvedTarget struct {
 	ExtraOptions []string
 
 	// UvBuildImage/UvRunImage/RunSubdir/Customizations só são significativos
-	// para Type == TypeUv.
+	// para Type/QualityType == TypeUv.
 	UvBuildImage   string
 	UvRunImage     string
 	RunSubdir      string
 	Customizations []string
 
-	// NpmBuildImage/NpmRunImage só são significativos para Type == TypeNpm.
+	// NpmBuildImage/NpmRunImage só são significativos para Type/QualityType == TypeNpm.
 	NpmBuildImage string
 	NpmRunImage   string
 
@@ -284,15 +293,32 @@ func (c *Config) EffectiveImage(name string) string {
 	return name
 }
 
+// EffectiveQualityType retorna o build system que analisa o código do target no
+// CheckQuality: o `quality-type` declarado ou, na ausência dele, o próprio
+// `type`. Targets custom devolvem TypeCustom e continuam sem quality no
+// orchestrator genérico.
+func (c *Config) EffectiveQualityType(name string) TargetType {
+	t := c.Targets[name]
+	if t.QualityType != "" {
+		return t.QualityType
+	}
+	return t.Type
+}
+
 // EffectiveVersionFile retorna o arquivo de versão do target, aplicando o
 // default por tipo: maven -> pom.xml, npm -> package.json,
 // uv/dockerfile -> pyproject.toml. Targets custom não têm default.
+//
+// O default segue o tipo EFETIVO DE QUALITY, e não o tipo de build: um target
+// dockerfile com `quality-type = "maven"` é um projeto Maven cuja imagem vem de
+// um Dockerfile, e seu arquivo de versão é o pom.xml. Sem `quality-type` os dois
+// coincidem, então o comportamento histórico não muda.
 func (c *Config) EffectiveVersionFile(name string) string {
 	t := c.Targets[name]
 	if t.VersionFile != "" {
 		return t.VersionFile
 	}
-	switch t.Type {
+	switch c.EffectiveQualityType(name) {
 	case TypeMaven:
 		return VersionFileMaven
 	case TypeNpm:
@@ -364,6 +390,7 @@ func (c *Config) Resolve(name string) (ResolvedTarget, error) {
 	return ResolvedTarget{
 		Name:              name,
 		Type:              t.Type,
+		QualityType:       c.EffectiveQualityType(name),
 		Path:              c.EffectivePath(name),
 		SourcePath:        c.EffectiveSourcePath(name),
 		Image:             c.EffectiveImage(name),

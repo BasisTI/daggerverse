@@ -39,17 +39,26 @@ run-subdir = "src"
 type = "uv"
 run-subdir = "src"
 
+# Imagem construída pelo Dockerfile próprio do scraper (precisa de browser no
+# runtime), mas o código continua sendo um projeto Python: quality-type = "uv"
+# faz o check-quality rodar testes e Sonar pelo módulo uv.
 [targets.comprasnet_nodriver]
 type = "dockerfile"
 path = "scrapers/comprasnet_nodriver"
 version-file = "pyproject.toml"
+sonar = true
+quality-type = "uv"
 
 [targets.mte]
 type = "dockerfile"
 path = "scrapers/mte"
 version-file = "pyproject.toml"
+sonar = true
+quality-type = "uv"
 
 [targets.cct_mte]
 type = "dockerfile"
 path = "scrapers/cct_mte"
 version-file = "pyproject.toml"
+sonar = true
+quality-type = "uv"

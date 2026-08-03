@@ -187,6 +187,15 @@ func TestEffectiveValues(t *testing.T) {
 		{"dockerfile default", licitacao.EffectiveDockerfile("mte"), DefaultDockerfile},
 		{"dockerfile explícito", kaizenstat.EffectiveDockerfile("judge-api"), "apps/judge-api/Dockerfile"},
 
+		// quality-type: ausente = o próprio type; presente = o declarado
+		{"quality-type default maven", contavinculada.EffectiveQualityType("snf"), TypeMaven},
+		{"quality-type default npm", contavinculada.EffectiveQualityType("frontend"), TypeNpm},
+		{"quality-type default uv", licitacao.EffectiveQualityType("painel_licitacoes"), TypeUv},
+		{"quality-type default dockerfile", kaizenstat.EffectiveQualityType("judge-api"), TypeDockerfile},
+		{"quality-type default custom", colaboradados.EffectiveQualityType("rh-dp"), TypeCustom},
+		{"quality-type declarado", licitacao.EffectiveQualityType("mte"), TypeUv},
+		{"quality-type não muda o type", licitacao.Targets["mte"].Type, TypeDockerfile},
+
 		// custom targets
 		{"tem custom", colaboradados.HasCustomTargets(), true},
 		{"não tem custom", contavinculada.HasCustomTargets(), false},
@@ -233,6 +242,7 @@ func TestResolveAndVersionFilePath(t *testing.T) {
 	want := ResolvedTarget{
 		Name:              "triagem-ingestao",
 		Type:              TypeMaven,
+		QualityType:       TypeMaven,
 		Path:              "triagem-ingestao",
 		SourcePath:        RepoRoot,
 		Image:             "triagem-ingestao",
@@ -295,7 +305,7 @@ func TestTargetListings(t *testing.T) {
 	if got, want := licitacao.TargetNamesByType(TypeDockerfile), []string{"cct_mte", "comprasnet_nodriver", "mte"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("TargetNamesByType(dockerfile) = %v, quer %v", got, want)
 	}
-	if got, want := licitacao.SonarTargetNames(), []string{"frontend", "integracao", "licitacao"}; !reflect.DeepEqual(got, want) {
+	if got, want := licitacao.SonarTargetNames(), []string{"cct_mte", "comprasnet_nodriver", "frontend", "integracao", "licitacao", "mte"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("SonarTargetNames = %v, quer %v", got, want)
 	}
 
@@ -430,6 +440,69 @@ image = "app"
 			wantErr: `imagem "app" duplicada`,
 		},
 		{
+			name: "quality-type inválido",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+sonar = true
+quality-type = "gradle"
+`,
+			wantErr: `quality-type "gradle" inválido`,
+		},
+		{
+			name: "quality-type dockerfile",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+sonar = true
+quality-type = "dockerfile"
+`,
+			wantErr: `quality-type "dockerfile" inválido`,
+		},
+		{
+			name: "quality-type custom",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+sonar = true
+quality-type = "custom"
+`,
+			wantErr: `quality-type "custom" inválido`,
+		},
+		{
+			name: "quality-type sem sonar",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+quality-type = "uv"
+`,
+			wantErr: "quality-type só faz sentido com sonar = true",
+		},
+		{
+			name: "dockerfile com sonar e sem quality-type",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+sonar = true
+`,
+			wantErr: `sonar = true em type = "dockerfile" exige quality-type`,
+		},
+		{
 			name: "campo desconhecido",
 			toml: `
 schema-version = 1
@@ -466,6 +539,88 @@ type = "maven"
 				t.Errorf("erro = %q, esperava conter %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestQualityTypeResolvesBuildSystemFields cobre o motivo de ser do
+// `quality-type`: uma imagem construída por Dockerfile próprio cujo CÓDIGO é
+// analisado por outro build system. O ResolvedTarget precisa trazer tanto o
+// Dockerfile do build quanto os campos de uv que o check de qualidade consome —
+// senão a estratégia de quality receberia um target vazio.
+func TestQualityTypeResolvesBuildSystemFields(t *testing.T) {
+	cfg, err := Load([]byte(`
+schema-version = 1
+[project]
+group = "licitacao"
+[defaults.uv]
+build-image = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+run-image = "python:3.12-slim-bookworm"
+[targets.scrapers_mte]
+type = "dockerfile"
+path = "scrapers/mte"
+sonar = true
+quality-type = "uv"
+run-subdir = "src"
+customizations = ["dlt"]
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	rt, err := cfg.Resolve("scrapers_mte")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if rt.Type != TypeDockerfile {
+		t.Errorf("Type = %q, quer %q", rt.Type, TypeDockerfile)
+	}
+	if rt.QualityType != TypeUv {
+		t.Errorf("QualityType = %q, quer %q", rt.QualityType, TypeUv)
+	}
+	if rt.Dockerfile != DefaultDockerfile {
+		t.Errorf("Dockerfile = %q, quer %q", rt.Dockerfile, DefaultDockerfile)
+	}
+	if rt.UvBuildImage != "ghcr.io/astral-sh/uv:python3.12-bookworm-slim" {
+		t.Errorf("UvBuildImage = %q (defaults de uv não chegaram ao target dockerfile)", rt.UvBuildImage)
+	}
+	if rt.UvRunImage != "python:3.12-slim-bookworm" {
+		t.Errorf("UvRunImage = %q", rt.UvRunImage)
+	}
+	if rt.RunSubdir != "src" {
+		t.Errorf("RunSubdir = %q, quer \"src\"", rt.RunSubdir)
+	}
+	if !reflect.DeepEqual(rt.Customizations, []string{"dlt"}) {
+		t.Errorf("Customizations = %v, quer [dlt]", rt.Customizations)
+	}
+	if got, want := rt.VersionFilePath(), "scrapers/mte/pyproject.toml"; got != want {
+		t.Errorf("VersionFilePath = %q, quer %q", got, want)
+	}
+}
+
+// TestQualityTypeDrivesVersionFileDefault documenta que o default de
+// version-file segue o build system que descreve o código, não o Dockerfile.
+func TestQualityTypeDrivesVersionFileDefault(t *testing.T) {
+	cfg, err := Load([]byte(`
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+sonar = true
+quality-type = "maven"
+[targets.b]
+type = "dockerfile"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.EffectiveVersionFile("a"); got != VersionFileMaven {
+		t.Errorf("version file com quality-type maven = %q, quer %q", got, VersionFileMaven)
+	}
+	// Sem quality-type, o default histórico do tipo dockerfile não muda.
+	if got := cfg.EffectiveVersionFile("b"); got != VersionFileUv {
+		t.Errorf("version file sem quality-type = %q, quer %q", got, VersionFileUv)
 	}
 }
 
