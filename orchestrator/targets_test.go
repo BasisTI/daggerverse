@@ -273,9 +273,11 @@ func TestDerivedImagesMatchTargets(t *testing.T) {
 func TestQualityTargetsFollowSonarFlag(t *testing.T) {
 	cases := map[string][]string{
 		"contavinculada": {"contavinculada", "frontend", "integracaosgo", "snf"},
-		"licitacao":      {"frontend", "integracao", "licitacao"},
-		"triagem":        {"triagem-core", "triagem-ingestao"},
-		"kaizenstat":     nil,
+		// Os três scrapers são type = "dockerfile" e mesmo assim entram: têm
+		// sonar = true e quality-type = "uv".
+		"licitacao":  {"cct_mte", "comprasnet_nodriver", "frontend", "integracao", "licitacao", "mte"},
+		"triagem":    {"triagem-core", "triagem-ingestao"},
+		"kaizenstat": nil,
 	}
 	for fixture, want := range cases {
 		t.Run(fixture, func(t *testing.T) {
@@ -319,14 +321,61 @@ func TestQualityTargetsMountPath(t *testing.T) {
 
 // TestUnsupportedFeaturesFailLoudly documenta o ponto em que o schema aceita
 // mais do que os módulos de build sabem executar.
+//
+// Um target dockerfile sem quality-type não chega aqui na prática — a validação
+// da configuração já o rejeita —, mas a estratégia continua sendo a última linha
+// de defesa para quem monta um ResolvedTarget à mão.
 func TestUnsupportedFeaturesFailLoudly(t *testing.T) {
-	dockerfileWithSonar := config.ResolvedTarget{
-		Name: "scraper", Type: config.TypeDockerfile, Sonar: true,
+	for _, rt := range []config.ResolvedTarget{
+		{Name: "scraper", Type: config.TypeDockerfile, QualityType: config.TypeDockerfile, Sonar: true},
+		{Name: "dbt", Type: config.TypeCustom, QualityType: config.TypeCustom, Sonar: true},
+	} {
+		if _, err := qualityStrategy(rt); err == nil {
+			t.Errorf("%s: esperado erro sem build system de quality", rt.Name)
+		} else if !strings.Contains(err.Error(), "sonar") || !strings.Contains(err.Error(), "quality-type") {
+			t.Errorf("%s: mensagem pouco clara: %v", rt.Name, err)
+		}
 	}
-	if _, err := qualityStrategy(dockerfileWithSonar); err == nil {
-		t.Error("esperado erro para target dockerfile com sonar")
-	} else if !strings.Contains(err.Error(), "sonar") {
-		t.Errorf("mensagem pouco clara: %v", err)
+}
+
+// TestQualityStrategyDispatchesByQualityType é a garantia da funcionalidade:
+// o check é escolhido pelo tipo EFETIVO DE QUALITY, não pelo tipo de build.
+// Um target cuja imagem sai de um Dockerfile próprio mas cujo código é Python
+// declara quality-type = "uv" e ganha o mesmo checkUv de um target uv.
+func TestQualityStrategyDispatchesByQualityType(t *testing.T) {
+	for _, qt := range []config.TargetType{config.TypeMaven, config.TypeNpm, config.TypeUv} {
+		rt := config.ResolvedTarget{
+			Name: "scraper", Type: config.TypeDockerfile, QualityType: qt, Sonar: true,
+		}
+		if _, err := qualityStrategy(rt); err != nil {
+			t.Errorf("dockerfile com quality-type %q deveria ter estratégia: %v", qt, err)
+		}
+	}
+
+	// E a fixture real: os scrapers do licitacao voltam a ter check de qualidade.
+	cfg := loadTestdata(t, "licitacao")
+	targets, err := qualityTargets(cfg)
+	if err != nil {
+		t.Fatalf("qualityTargets: %v", err)
+	}
+	for _, name := range []string{"comprasnet_nodriver", "mte", "cct_mte"} {
+		qt, ok := targets[name]
+		if !ok {
+			t.Errorf("scraper %q ficou de fora do check-quality", name)
+			continue
+		}
+		if qt.Check == nil {
+			t.Errorf("scraper %q sem estratégia de check", name)
+		}
+		rt, err := cfg.Resolve(name)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", name, err)
+		}
+		// O check roda pelo módulo uv, então os opts de uv precisam estar
+		// preenchidos mesmo num target dockerfile.
+		if opts := uvOpts(rt); opts.BuildImage == "" || opts.RunImage == "" {
+			t.Errorf("scraper %q: uvOpts incompletos: %+v", name, opts)
+		}
 	}
 }
 
@@ -360,10 +409,19 @@ func TestValidateReportContent(t *testing.T) {
 		"licitacao/carga_editais -> carga_editais",
 		"licitacao/processos_judiciais -> scrapers/processos_judiciais",
 		"scrapers/mte/pyproject.toml",
+		// O tipo de quality divergente aparece explicitamente, junto dos campos
+		// do build system que vai analisar o código.
+		"quality-type: uv",
+		"quality (uv):",
 	} {
 		if !strings.Contains(report, fragment) {
 			t.Errorf("relatório não contém %q:\n%s", fragment, report)
 		}
+	}
+
+	// Targets em que build e quality coincidem não ganham a linha extra.
+	if strings.Count(report, "quality-type:") != 3 {
+		t.Errorf("quality-type deveria aparecer só nos 3 scrapers:\n%s", report)
 	}
 
 	kaizenstat := renderReport(loadTestdata(t, "kaizenstat"), "ci/pipeline.toml")

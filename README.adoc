@@ -69,7 +69,7 @@ dagger call -m github.com/BasisTI/daggerverse/orchestrator@3.0.0 \
 
 Carrega e valida o arquivo declarativo e devolve um relatório textual com os targets já resolvidos (com defaults aplicados), o mapa de imagens derivado e eventuais avisos. *Não faz nenhuma chamada de rede* — é o job de lint da configuração, disparado no MR quando `ci/pipeline.toml` muda.
 
-Os avisos cobrem o que é válido no schema mas o orchestrator genérico não consegue executar: targets `type = "custom"` e targets `dockerfile` com `sonar = true`.
+Os avisos cobrem o que é válido no schema mas o orchestrator genérico não consegue executar: targets `type = "custom"`.
 
 ==== check-quality
 
@@ -152,7 +152,7 @@ Implementado em `pipeline/config`. O parse é *estrito*: qualquer campo desconhe
 | Nome da imagem no registry, sem grupo e sem tag. *Default: o nome do target.* Os nomes efetivos precisam ser únicos entre os targets.
 
 | `version-file` | string
-| Arquivo de versão bumpado pelo `publish-all`. *Default por tipo:* `pom.xml` (maven), `package.json` (npm), `pyproject.toml` (uv e dockerfile). Targets custom não têm default.
+| Arquivo de versão bumpado pelo `publish-all`. *Default por tipo:* `pom.xml` (maven), `package.json` (npm), `pyproject.toml` (uv e dockerfile). Quando há `quality-type`, o default segue ele — é ele que descreve o código. Targets custom não têm default.
 
 | `root-version-file` | bool
 | Indica que `version-file` é relativo à *raiz* do repositório, e não ao `path` do target. Caso típico do reactor Maven multi-módulo, em que vários targets compartilham o `pom.xml` da raiz.
@@ -161,8 +161,36 @@ Implementado em `pipeline/config`. O parse é *estrito*: qualquer campo desconhe
 | Paths adicionais que também disparam o build/check deste target (ex: uma lib compartilhada, o `pom.xml` da raiz).
 
 | `sonar` | bool
-| O target participa do `check-quality`. Não é suportado em targets `dockerfile`.
+| O target participa do `check-quality`. Em targets `type = "dockerfile"` exige `quality-type`; em targets `custom`, o check fica a cargo do módulo Dagger do projeto.
+
+| `quality-type` | string
+| Build system que analisa o *código* do target, quando ele difere de como a *imagem* é construída. Um de `maven`, `npm`, `uv` — nunca `dockerfile` nem `custom`, que não têm build system. Só é aceito junto de `sonar = true`. *Default: o próprio `type`.* Ver <<quality-type>>.
 |===
+
+[[quality-type]]
+==== `quality-type`: analisar o código de um target `dockerfile`
+
+`type` responde "como a imagem é construída"; `quality-type` responde "com que build system o código é testado e analisado". Na esmagadora maioria dos targets os dois são a mesma coisa, e `quality-type` é omitido.
+
+Eles divergem quando um projeto precisa de um `Dockerfile` próprio para o runtime — display virtual, browser headless, drivers nativos — mas o código continua sendo um projeto uv/Maven/npm normal, com testes e análise estática. Sem `quality-type` esse target teria de escolher entre publicar a imagem certa e ter qualidade medida; com ele, `publish-all` builda pelo Dockerfile e `check-quality` roda pelo build system declarado.
+
+É o caso dos scrapers do `licitacao`, que rodam navegador no runtime:
+
+[source,toml]
+----
+[targets.scrapers_mte]
+type = "dockerfile"          # a imagem sai do Dockerfile do scraper
+path = "scrapers/mte"
+sonar = true
+quality-type = "uv"          # o código é Python: testes e Sonar pelo módulo uv
+----
+
+Os campos do build system de quality (`run-subdir`, `uv-build-image`, `customizations`, `maven-image`, …) valem normalmente no target e são o que o `check-quality` consome — e o `validate` os mostra num bloco `quality (<tipo>)` separado.
+
+Duas regras de validação mantêm o campo honesto:
+
+* `quality-type` sem `sonar = true` é *erro*: seria um campo inerte, que engana quem lê o arquivo;
+* `sonar = true` num target `dockerfile` *sem* `quality-type` é *erro* de validação, com a mensagem indicando exatamente o campo que falta — não uma falha tardia na hora de rodar o check.
 
 === Campos de `type = "maven"`
 

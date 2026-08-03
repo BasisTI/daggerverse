@@ -315,31 +315,18 @@ func renderReport(cfg *config.Config, configPath string) string {
 		fmt.Fprintf(&sb, "    imagem:       %s\n", cfg.ImagePath(rt.Name))
 		fmt.Fprintf(&sb, "    version-file: %s\n", orDash(versionFilePath(rt)))
 		fmt.Fprintf(&sb, "    sonar:        %t\n", rt.Sonar)
+		if rt.QualityType != rt.Type {
+			fmt.Fprintf(&sb, "    quality-type: %s\n", rt.QualityType)
+		}
 		if len(rt.ExtraTriggerPaths) > 0 {
 			fmt.Fprintf(&sb, "    triggers:     %s\n", strings.Join(rt.ExtraTriggerPaths, ", "))
 		}
-		switch rt.Type {
-		case config.TypeMaven:
-			fmt.Fprintf(&sb, "    maven-image:  %s\n", orDash(rt.MavenImage))
-			fmt.Fprintf(&sb, "    use-docker:   %t\n", rt.UseDocker)
-			if rt.Reactor {
-				fmt.Fprintf(&sb, "    reactor:      true (module %s)\n", rt.Module)
-			}
-			if len(rt.ExtraOptions) > 0 {
-				fmt.Fprintf(&sb, "    extra-opts:   %s\n", strings.Join(rt.ExtraOptions, " "))
-			}
-		case config.TypeNpm:
-			fmt.Fprintf(&sb, "    build-image:  %s\n", orDash(rt.NpmBuildImage))
-			fmt.Fprintf(&sb, "    run-image:    %s\n", orDash(rt.NpmRunImage))
-		case config.TypeUv:
-			fmt.Fprintf(&sb, "    build-image:  %s\n", orDash(rt.UvBuildImage))
-			fmt.Fprintf(&sb, "    run-image:    %s\n", orDash(rt.UvRunImage))
-			fmt.Fprintf(&sb, "    run-subdir:   %s\n", orDash(rt.RunSubdir))
-			if len(rt.Customizations) > 0 {
-				fmt.Fprintf(&sb, "    customiz.:    %s\n", strings.Join(rt.Customizations, ", "))
-			}
-		case config.TypeDockerfile:
-			fmt.Fprintf(&sb, "    dockerfile:   %s\n", rt.Dockerfile)
+		renderTypeFields(&sb, rt, rt.Type)
+		// Quando o código é analisado por outro build system, os campos que o
+		// check de qualidade vai usar também precisam aparecer no relatório.
+		if rt.QualityType != rt.Type {
+			fmt.Fprintf(&sb, "    quality (%s):\n", rt.QualityType)
+			renderTypeFields(&sb, rt, rt.QualityType)
 		}
 	}
 
@@ -364,10 +351,42 @@ func renderReport(cfg *config.Config, configPath string) string {
 	return sb.String()
 }
 
+// renderTypeFields escreve os campos específicos de um tipo de build. É chamado
+// para o tipo de build do target e, quando divergente, para seu tipo de quality.
+func renderTypeFields(sb *strings.Builder, rt config.ResolvedTarget, kind config.TargetType) {
+	switch kind {
+	case config.TypeMaven:
+		fmt.Fprintf(sb, "    maven-image:  %s\n", orDash(rt.MavenImage))
+		fmt.Fprintf(sb, "    use-docker:   %t\n", rt.UseDocker)
+		if rt.Reactor {
+			fmt.Fprintf(sb, "    reactor:      true (module %s)\n", rt.Module)
+		}
+		if len(rt.ExtraOptions) > 0 {
+			fmt.Fprintf(sb, "    extra-opts:   %s\n", strings.Join(rt.ExtraOptions, " "))
+		}
+	case config.TypeNpm:
+		fmt.Fprintf(sb, "    build-image:  %s\n", orDash(rt.NpmBuildImage))
+		fmt.Fprintf(sb, "    run-image:    %s\n", orDash(rt.NpmRunImage))
+	case config.TypeUv:
+		fmt.Fprintf(sb, "    build-image:  %s\n", orDash(rt.UvBuildImage))
+		fmt.Fprintf(sb, "    run-image:    %s\n", orDash(rt.UvRunImage))
+		fmt.Fprintf(sb, "    run-subdir:   %s\n", orDash(rt.RunSubdir))
+		if len(rt.Customizations) > 0 {
+			fmt.Fprintf(sb, "    customiz.:    %s\n", strings.Join(rt.Customizations, ", "))
+		}
+	case config.TypeDockerfile:
+		fmt.Fprintf(sb, "    dockerfile:   %s\n", rt.Dockerfile)
+	}
+}
+
 // configWarnings lista o que é válido no schema mas o orchestrator genérico não
 // consegue executar. São avisos, não erros: a configuração continua sendo a
 // fonte de verdade de check-images e promote, que funcionam para todos os
 // targets, inclusive os custom.
+//
+// `sonar = true` em target dockerfile não entra aqui: ou o target declara
+// `quality-type` e o check roda de verdade, ou a configuração nem carrega —
+// virou erro de validação em config.Validate.
 func configWarnings(cfg *config.Config) []string {
 	var warnings []string
 
@@ -377,14 +396,6 @@ func configWarnings(cfg *config.Config) []string {
 				"o projeto precisa de um módulo Dagger próprio para buildá-los. "+
 				"check-images e promote continuam cobrindo suas imagens normalmente",
 			strings.Join(custom, ", ")))
-	}
-
-	for _, rt := range cfg.ResolveAll() {
-		if rt.Sonar && rt.Type == config.TypeDockerfile {
-			warnings = append(warnings, fmt.Sprintf(
-				"target %q: sonar = true não é suportado em targets dockerfile "+
-					"(não há build system para analisar); check-quality falharia", rt.Name))
-		}
 	}
 
 	return warnings

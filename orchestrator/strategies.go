@@ -34,8 +34,13 @@ func buildStrategy(rt config.ResolvedTarget, group string) (pipeline.BuildStrate
 }
 
 // qualityStrategy escolhe o check de qualidade do target.
+//
+// O despacho é pelo tipo EFETIVO DE QUALITY, não pelo tipo de build: um target
+// cuja imagem sai de um Dockerfile próprio mas cujo código é um projeto Python
+// declara `quality-type = "uv"` e roda checkUv normalmente. Sem `quality-type`,
+// QualityType é igual a Type e o despacho é o de sempre.
 func qualityStrategy(rt config.ResolvedTarget) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
-	switch rt.Type {
+	switch rt.QualityType {
 	case config.TypeMaven:
 		return checkMaven(rt), nil
 	case config.TypeNpm:
@@ -44,8 +49,9 @@ func qualityStrategy(rt config.ResolvedTarget) (pipeline.QualityStrategy[*dagger
 		return checkUv(rt), nil
 	default:
 		return nil, fmt.Errorf(
-			"target %q: sonar = true não é suportado em targets type = %q "+
-				"(não há build system para rodar testes e análise estática)", rt.Name, rt.Type)
+			"target %q: sonar = true não é suportado em targets type = %q sem quality-type "+
+				"(não há build system para rodar testes e análise estática); "+
+				"declare quality-type = \"maven\" | \"npm\" | \"uv\"", rt.Name, rt.Type)
 	}
 }
 
