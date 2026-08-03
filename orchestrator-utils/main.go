@@ -578,6 +578,10 @@ func (u *OrchestratorUtils) Promote(
 	}
 
 	crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug").
+		// Sem o cache buster o Dagger reaproveita o resultado de um `crane digest`
+		// anterior, e a comparação de digests abaixo decidiria com base no estado
+		// do registry de outra execução. Mesmo motivo do TagAndPush.
+		WithEnvVariable("CACHE_BUSTER", time.Now().Format(time.RFC3339Nano)).
 		WithSecretVariable("REGISTRY_PASS", registryPass).
 		WithExec([]string{"sh", "-c",
 			fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", srcRegistry, registryUser)})
@@ -606,6 +610,16 @@ func (u *OrchestratorUtils) Promote(
 
 		dstImageRef := fmt.Sprintf("%s/%s:production-%s", dstRegistry, imagePath, originalVersion)
 
+		// Só os serviços alterados desde a última promoção têm o que copiar. Os
+		// demais continuam apontando para a mesma imagem que já foi promovida, e
+		// recopiá-los reescreve uma tag idêntica: gasta tráfego de registry e
+		// afoga, no log, quais serviços de fato entraram nesta promoção.
+		srcDigest := imageDigest(ctx, crane, srcImageRef)
+		if srcDigest != "" && srcDigest == imageDigest(ctx, crane, dstImageRef) {
+			fmt.Printf("⏭️  Já promovida: %s\n", dstImageRef)
+			continue
+		}
+
 		fmt.Printf("📦 Promovendo: %s -> %s\n", srcImageRef, dstImageRef)
 
 		_, err = crane.WithExec([]string{"crane", "copy", srcImageRef, dstImageRef}).Sync(ctx)
@@ -614,4 +628,20 @@ func (u *OrchestratorUtils) Promote(
 		}
 	}
 	return nil
+}
+
+// imageDigest devolve o digest da tag, ou "" quando ela não existe ou não pôde
+// ser consultada.
+//
+// O erro é engolido de propósito: a tag de destino não existir é o caso normal
+// da primeira promoção de um serviço, e `crane digest` não distingue isso de uma
+// falha de rede ou de credencial. Tratar todo erro como "não sei" faz a promoção
+// seguir para o copy — que é exatamente o comportamento anterior a esta
+// verificação, e onde um erro real volta a aparecer com a mensagem certa.
+func imageDigest(ctx context.Context, crane *dagger.Container, ref string) string {
+	digest, err := crane.WithExec([]string{"crane", "digest", ref}).Stdout(ctx)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(digest)
 }

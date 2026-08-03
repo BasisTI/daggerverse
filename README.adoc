@@ -93,6 +93,8 @@ Targets custom *não* são ignorados aqui: suas imagens existem no registry e pr
 
 Promove as imagens derivadas da configuração de `--src-registry` para `--dst-registry` (que, se vazio, é o próprio `--src-registry`). Assim como `check-images`, cobre também as imagens de targets custom.
 
+Cada promoção percorre *todas* as imagens do projeto, não só as que mudaram — é assim que uma imagem antiga continua tendo sua tag `production-` presente. Mas a cópia só acontece quando ela muda alguma coisa: antes de copiar, o digest da tag de origem é comparado com o da tag de produção, e se forem iguais a imagem é pulada com `⏭️  Já promovida`. Serviços parados há meses deixam de gerar tráfego de registry a cada merge em `main`, e o log passa a mostrar de relance o que de fato entrou na promoção.
+
 [[schema]]
 == O schema de `ci/pipeline.toml`
 
