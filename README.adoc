@@ -44,7 +44,7 @@ Um projeto precisa de exatamente dois arquivos.
 [source,yaml]
 ----
 include:
-  - project: 'devops/ci-templates'
+  - project: 'basis/iac/ci-templates'
     ref: v1.0.0
     file: 'templates/dagger-orchestrator.gitlab-ci.yml'
 ----
