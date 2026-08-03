@@ -352,13 +352,13 @@ O `versions:set` é evitado de propósito: reescrever os POMs brigaria com o fla
 
 === O que o projeto precisa ter no pom
 
-. O `pom.xml` da raiz declara `<version>${revision}</version>` e a property `<revision>` com o número real:
+. O `pom.xml` da raiz declara `<version>${revision}</version>` e a property `<revision>` com um valor de desenvolvimento local:
 +
 [source,xml]
 ----
 <version>${revision}</version>
 <properties>
-  <revision>2025.11.28.42</revision>
+  <revision>0.0.1-SNAPSHOT</revision>
 </properties>
 ----
 
@@ -366,7 +366,13 @@ O `versions:set` é evitado de propósito: reescrever os POMs brigaria com o fla
 
 . O maven-install-plugin ativo no `verify`. *Isso é obrigatório:* o stage do Jib roda sem `-am`, ou seja, sem reconstruir os módulos irmãos — eles precisam já estar no repositório local, instalados pelo stage de build e teste.
 
-O bump de versão acompanha esse modelo: quando o `<version>` do pom é `${revision}`, o `orchestrator-utils` edita a property `<revision>` do pom da *raiz*, e não o elemento `<version>`. É por isso que targets reactor declaram `version-file = "pom.xml"` com `root-version-file = true`.
+=== Quem escreve o número da versão
+
+Ninguém escreve esse número à mão. O valor da property `<revision>` no arquivo *não é usado pela pipeline*: cada invocação do Maven recebe `-Drevision=<CalVer>`, e propriedade de linha de comando vence a do POM. O que estiver commitado ali só vale para quem roda `mvn` na própria máquina, sem passar `-Drevision` — por isso o valor inicial deve ser um `SNAPSHOT` de desenvolvimento, e não uma CalVer.
+
+Depois de publicar as imagens, o `publish-all` grava a CalVer de volta no arquivo e commita: quando o `<version>` do pom é `${revision}`, o `orchestrator-utils` edita a property `<revision>` do pom da *raiz*, e não o elemento `<version>`. É por isso que targets reactor declaram `version-file = "pom.xml"` com `root-version-file = true`.
+
+Ou seja, o número que você encontra no repositório é o rastro da última pipeline bem-sucedida, não uma entrada que alguém precisa manter.
 
 == Breaking changes da 3.0
 
