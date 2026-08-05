@@ -480,9 +480,11 @@ Estes módulos são chamados *pelo orchestrator*; um projeto normalmente não os
 
 === maven
 
-Build e teste (`clean verify`), análise Sonar (`sonar:sonar`) e publicação da imagem via plugin Jib. Suporta Maven Wrapper, cache do repositório local, daemon Docker opcional para Testcontainers, modo reactor e reporte de commit statuses.
+Build e teste (`clean verify`), análise Sonar e publicação da imagem via plugin Jib. Suporta Maven Wrapper, cache do repositório local, daemon Docker opcional para Testcontainers, modo reactor e reporte de commit statuses.
 
 Fora do modo reactor, a versão é aplicada com `versions:set`; no modo reactor, com `-Drevision`.
+
+O scanner é invocado por `org.sonarsource.scanner.maven:sonar-maven-plugin:sonar`, e não pelo prefixo `sonar:sonar`. O prefixo só resolve quando o projeto declara o plugin -- ele não está nos pluginGroups padrão do Maven -- e essa dependência implícita quebrava projetos que não são gerados pelo JHipster. Como a forma qualificada não fixa versão, um projeto que declare o `sonar-maven-plugin` continua usando a versão dele; quem não declara recebe a última release.
 
 === npm
 

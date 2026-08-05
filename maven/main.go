@@ -139,10 +139,25 @@ func (m *Maven) configureSonar(ctx context.Context, sonarConfig *SonarConfig, mo
 	}
 	return PipelineStage{
 		DisplayName: "SonarQube Analysis",
-		Goals:       []string{"sonar:sonar"},
+		Goals:       []string{sonarGoal},
 		Options:     sonarOptions,
 	}, nil
 }
+
+// sonarGoal invoca o scanner pelo groupId:artifactId, e não pelo prefixo `sonar:sonar`.
+//
+// O prefixo só resolve se o projeto declarar o sonar-maven-plugin: ele não está nos
+// pluginGroups padrão do Maven (org.apache.maven.plugins, org.codehaus.mojo). Os quatro
+// primeiros projetos migrados funcionaram por acaso -- são gerados pelo JHipster, que
+// declara o plugin -- e o primeiro projeto que não é caiu com "No plugin found for prefix
+// 'sonar'". Exigir a declaração em todo pom seria uma armadilha silenciosa: quebra na
+// análise, depois de o build inteiro já ter rodado.
+//
+// A forma sem versão é deliberada. Quando o pom declara o plugin, o Maven usa a versão de
+// lá (verificado: um pom com 5.1.0.4751 executa 5.1.0.4751); quando não declara, resolve a
+// última release. Assim os projetos que já fixam a versão continuam com exatamente o
+// scanner de hoje, e os que não fixam passam a funcionar.
+const sonarGoal = "org.sonarsource.scanner.maven:sonar-maven-plugin:sonar"
 
 // executeStages runs the provided pipeline stages sequentially using a shared container.
 func (m *Maven) executeStages(
