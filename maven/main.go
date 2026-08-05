@@ -64,7 +64,7 @@ func (m *Maven) FullBuild(ctx context.Context,
 			return nil, err
 		}
 		if m.ReactorMode {
-			sonarStage.Options = append(reactorOptions(module, version), sonarStage.Options...)
+			sonarStage.Options = append(sonarReactorOptions(module, version), sonarStage.Options...)
 		}
 		stages = append(stages, sonarStage)
 	}
@@ -110,6 +110,27 @@ func (m *Maven) FullBuild(ctx context.Context,
 func reactorOptions(module, version string, extra ...string) []string {
 	options := []string{"-pl", module, "-Drevision=" + version}
 	return append(options, extra...)
+}
+
+// sonarReactorOptions seleciona o módulo por `-f <módulo>/pom.xml` em vez de `-pl <módulo>`.
+//
+// O scanner exige um "top level project" na sessão do Maven: ele chama
+// session.getTopLevelProject(), que procura o projeto cujo diretório é a raiz de execução. Com
+// `-pl <módulo>` rodando da raiz do reactor, a raiz de execução é a raiz do repositório mas o
+// único projeto da sessão é o módulo -- nenhum casa, e a análise morre com "Maven session does
+// not declare a top level project", depois do build inteiro já ter rodado.
+//
+// Com `-f <módulo>/pom.xml` a raiz de execução passa a ser o diretório do módulo, que é
+// justamente o projeto da sessão. O escopo analisado também fica certo: um projeto no Sonar por
+// deployable, sem arrastar a raiz e a lib compartilhada para dentro de cada um -- que é o que
+// aconteceria acrescentando `-am` para dar um top level project à sessão.
+//
+// A contrapartida é depender de as dependências irmãs estarem no repositório local, já que não
+// há reactor para resolvê-las. Isso não é requisito novo: o estágio do Jib também roda
+// `-pl <módulo>` sem `-am` e já depende disso -- é por isso que o pom-esqueleto do reactor
+// amarra o maven-install-plugin à fase `verify`.
+func sonarReactorOptions(module, version string) []string {
+	return []string{"-f", module + "/pom.xml", "-Drevision=" + version}
 }
 
 func (m *Maven) configureDockerPublish(
