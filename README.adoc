@@ -129,6 +129,7 @@ Implementado em `pipeline/config`. O parse é *estrito*: qualquer campo desconhe
 
 | `defaults.maven` | `image` | string | Imagem base dos builds Maven.
 | `defaults.maven` | `use-docker` | bool | Liga um daemon Docker no build (Testcontainers).
+| `defaults.maven` | `sonar-plugin-version` | string | Versão do `sonar-maven-plugin`. Vazio usa o default fixo do módulo maven.
 | `defaults.npm` | `build-image` | string | Imagem de build (ex: `node:22-alpine`).
 | `defaults.npm` | `run-image` | string | Imagem de runtime (ex: `nginx:alpine`).
 | `defaults.uv` | `build-image` | string | Imagem de build (ex: `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`).
@@ -202,6 +203,7 @@ Duas regras de validação mantêm o campo honesto:
 
 | `maven-image` | string | Sobrescreve `defaults.maven.image`.
 | `use-docker` | bool | Sobrescreve `defaults.maven.use-docker`.
+| `sonar-plugin-version` | string | Sobrescreve `defaults.maven.sonar-plugin-version`.
 | `reactor` | bool | Build multi-módulo: monta a raiz e builda com `-pl <module> -am`. Ver <<reactor>>.
 | `module` | string | Path do módulo dentro do reactor. *Obrigatório quando `reactor = true`.*
 | `extra-options` | lista de string | Opções extras passadas ao `mvn`.
@@ -484,7 +486,9 @@ Build e teste (`clean verify`), análise Sonar e publicação da imagem via plug
 
 Fora do modo reactor, a versão é aplicada com `versions:set`; no modo reactor, com `-Drevision`.
 
-O scanner é invocado por `org.sonarsource.scanner.maven:sonar-maven-plugin:sonar`, e não pelo prefixo `sonar:sonar`. O prefixo só resolve quando o projeto declara o plugin -- ele não está nos pluginGroups padrão do Maven -- e essa dependência implícita quebrava projetos que não são gerados pelo JHipster. Como a forma qualificada não fixa versão, um projeto que declare o `sonar-maven-plugin` continua usando a versão dele; quem não declara recebe a última release.
+O scanner é invocado por coordenadas completas -- `org.sonarsource.scanner.maven:sonar-maven-plugin:<versão>:sonar` -- e não pelo prefixo `sonar:sonar`. O prefixo só resolve quando o projeto declara o plugin, já que ele não está nos pluginGroups padrão do Maven, e essa dependência implícita quebrava projetos que não são gerados pelo JHipster.
+
+A versão é fixa (`sonar-plugin-version`, com default no módulo maven) por dois motivos: uma release nova da SonarSource não pode quebrar todas as pipelines de um dia para o outro sem commit em lugar nenhum, e o scanner precisa continuar compatível com o servidor, que sobe de versão no ritmo dele. Como consequência, o `<version>` declarado no pom deixa de influenciar qual scanner roda -- quem precisa de outra versão a declara no `ci/pipeline.toml`.
 
 === npm
 
