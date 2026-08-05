@@ -52,7 +52,20 @@ type Maven struct {
 	UseJib        bool
 	// Bind a Docker daemon to the build, for test suites that use Testcontainers
 	UseDocker bool
+	// Version of sonar-maven-plugin used for the analysis
+	SonarPluginVersion string
 }
+
+// DefaultSonarPluginVersion is the sonar-maven-plugin release the analysis runs with.
+//
+// It is pinned on purpose. Resolving the newest release at build time would let a SonarSource
+// release break every pipeline overnight, without a commit anywhere -- and the scanner has to stay
+// compatible with the server, which upgrades on its own schedule. Bumping this is a deliberate act,
+// visible in the diff and testable against the server first.
+//
+// Projects that need a different one set `sonar-plugin-version` in ci/pipeline.toml, under
+// [defaults.maven] or on the target.
+const DefaultSonarPluginVersion = "5.7.0.6970"
 
 // DefaultMvnCiOptions lists the flags automatically added when UseDefaultCiOptions is enabled.
 var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.failure.ignore=true"}
@@ -87,7 +100,12 @@ func New(
 	// Maven image ships no daemon, and without one they fail with "Could not find a valid Docker
 	// environment". Off by default because it costs a dind container per build.
 	// +default=false
-	useDocker bool) *Maven {
+	useDocker bool,
+	// Version of sonar-maven-plugin to run the analysis with. Pinned so a SonarSource release
+	// cannot break the pipelines without a commit, and so the scanner stays compatible with the
+	// server the org actually runs.
+	// +default="5.7.0.6970"
+	sonarPluginVersion string) *Maven {
 	m := &Maven{
 		Image:               buildImage,
 		UseMvnw:             useMvnw,
@@ -97,6 +115,10 @@ func New(
 		ReactorMode:         reactorMode,
 		UseJib:              useJib,
 		UseDocker:           useDocker,
+		SonarPluginVersion:  sonarPluginVersion,
+	}
+	if m.SonarPluginVersion == "" {
+		m.SonarPluginVersion = DefaultSonarPluginVersion
 	}
 	return m
 }

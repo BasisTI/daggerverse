@@ -68,10 +68,11 @@ func mavenModule(rt config.ResolvedTarget, target string) string {
 
 func mavenOpts(rt config.ResolvedTarget) dagger.MavenOpts {
 	return dagger.MavenOpts{
-		BuildImage:   rt.MavenImage,
-		UseDocker:    rt.UseDocker,
-		ReactorMode:  rt.Reactor,
-		ExtraOptions: rt.ExtraOptions,
+		BuildImage:         rt.MavenImage,
+		UseDocker:          rt.UseDocker,
+		ReactorMode:        rt.Reactor,
+		ExtraOptions:       rt.ExtraOptions,
+		SonarPluginVersion: rt.SonarPluginVersion,
 	}
 }
 

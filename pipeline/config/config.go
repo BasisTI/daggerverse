@@ -73,6 +73,9 @@ type Defaults struct {
 type MavenDefaults struct {
 	Image     string `toml:"image"`
 	UseDocker bool   `toml:"use-docker"`
+	// SonarPluginVersion fixa a versão do sonar-maven-plugin. Vazio usa o default
+	// do módulo maven — que também é fixo, nunca "a última release".
+	SonarPluginVersion string `toml:"sonar-plugin-version"`
 }
 
 // NpmDefaults são os defaults dos targets type = "npm".
@@ -124,6 +127,8 @@ type Target struct {
 	// UseDocker sobrescreve defaults.maven.use-docker (ponteiro para distinguir
 	// "ausente" de "false").
 	UseDocker *bool `toml:"use-docker"`
+	// SonarPluginVersion sobrescreve defaults.maven.sonar-plugin-version.
+	SonarPluginVersion string `toml:"sonar-plugin-version"`
 	// Reactor indica build multi-módulo: monta a raiz e builda com -pl <module> -am.
 	Reactor bool `toml:"reactor"`
 	// Module é o path do módulo no reactor. Obrigatório quando Reactor = true.
@@ -166,11 +171,12 @@ type ResolvedTarget struct {
 	Sonar             bool
 
 	// MavenImage e UseDocker só são significativos para Type/QualityType == TypeMaven.
-	MavenImage   string
-	UseDocker    bool
-	Reactor      bool
-	Module       string
-	ExtraOptions []string
+	MavenImage         string
+	UseDocker          bool
+	SonarPluginVersion string
+	Reactor            bool
+	Module             string
+	ExtraOptions       []string
 
 	// UvBuildImage/UvRunImage/RunSubdir/Customizations só são significativos
 	// para Type/QualityType == TypeUv.
@@ -338,6 +344,15 @@ func (c *Config) EffectiveMavenImage(name string) string {
 	return c.Defaults.Maven.Image
 }
 
+// EffectiveSonarPluginVersion retorna a versão fixada do sonar-maven-plugin (override do
+// target, default do projeto, ou "" para o módulo maven aplicar o default dele).
+func (c *Config) EffectiveSonarPluginVersion(name string) string {
+	if v := c.Targets[name].SonarPluginVersion; v != "" {
+		return v
+	}
+	return c.Defaults.Maven.SonarPluginVersion
+}
+
 // EffectiveUseDocker retorna se o build maven precisa de um daemon Docker.
 func (c *Config) EffectiveUseDocker(name string) bool {
 	if v := c.Targets[name].UseDocker; v != nil {
@@ -398,8 +413,9 @@ func (c *Config) Resolve(name string) (ResolvedTarget, error) {
 		RootVersionFile:   t.RootVersionFile,
 		ExtraTriggerPaths: t.ExtraTriggerPaths,
 		Sonar:             t.Sonar,
-		MavenImage:        c.EffectiveMavenImage(name),
-		UseDocker:         c.EffectiveUseDocker(name),
+		MavenImage:         c.EffectiveMavenImage(name),
+		UseDocker:          c.EffectiveUseDocker(name),
+		SonarPluginVersion: c.EffectiveSonarPluginVersion(name),
 		Reactor:           t.Reactor,
 		Module:            t.Module,
 		ExtraOptions:      t.ExtraOptions,

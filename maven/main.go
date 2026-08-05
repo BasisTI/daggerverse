@@ -160,7 +160,7 @@ func (m *Maven) configureSonar(ctx context.Context, sonarConfig *SonarConfig, mo
 	}
 	return PipelineStage{
 		DisplayName: "SonarQube Analysis",
-		Goals:       []string{sonarGoal},
+		Goals:       []string{m.sonarGoal()},
 		Options:     sonarOptions,
 	}, nil
 }
@@ -174,11 +174,20 @@ func (m *Maven) configureSonar(ctx context.Context, sonarConfig *SonarConfig, mo
 // 'sonar'". Exigir a declaração em todo pom seria uma armadilha silenciosa: quebra na
 // análise, depois de o build inteiro já ter rodado.
 //
-// A forma sem versão é deliberada. Quando o pom declara o plugin, o Maven usa a versão de
-// lá (verificado: um pom com 5.1.0.4751 executa 5.1.0.4751); quando não declara, resolve a
-// última release. Assim os projetos que já fixam a versão continuam com exatamente o
-// scanner de hoje, e os que não fixam passam a funcionar.
-const sonarGoal = "org.sonarsource.scanner.maven:sonar-maven-plugin:sonar"
+// A versão vem de SonarPluginVersion, e não do pom nem da última release do repositório. A
+// forma qualificada com versão é a única que garante as duas coisas ao mesmo tempo: funciona
+// em pom que não declara o plugin, e não fica à mercê de uma release nova da SonarSource
+// quebrar todas as pipelines de um dia para o outro, sem commit em lugar nenhum.
+//
+// Um projeto que precise de outra versão a declara em ci/pipeline.toml, e não no pom: o pom
+// deixa de influenciar qual scanner roda.
+func (m *Maven) sonarGoal() string {
+	version := m.SonarPluginVersion
+	if version == "" {
+		version = DefaultSonarPluginVersion
+	}
+	return "org.sonarsource.scanner.maven:sonar-maven-plugin:" + version + ":sonar"
+}
 
 // executeStages runs the provided pipeline stages sequentially using a shared container.
 func (m *Maven) executeStages(
