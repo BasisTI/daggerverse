@@ -30,7 +30,29 @@ func (m *Maven) FullBuild(ctx context.Context,
 // GitLab configuration for reporting commit statuses
 // +optional
 	gitlabConfig *GitLabConfig,
+// Caminho do módulo relativo à raiz do repositório. Quando informado, `source` é a RAIZ DO
+// REPOSITÓRIO e não o diretório do módulo: a árvore inteira é montada em /app e o build roda em
+// /app/<modulePath>.
+//
+// É o que permite ao Sonar fazer blame. O .git vive na raiz do repositório e o índice do git
+// referencia os arquivos pelo caminho a partir dela, então montar o .git dentro do diretório do
+// módulo NÃO funciona: o git passaria a resolver `pom.xml` contra a entrada `pom.xml` da raiz --
+// arquivo diferente -- e todo arquivo voltaria como "Not Committed Yet". Para o Sonar isso é pior
+// do que não ter SCM nenhum: em vez de ficar cego, ele trata 100% do código como novo.
+//
+// Ignorado em ReactorMode, que já monta a raiz por construção.
+// +optional
+	modulePath string,
 ) (*ModuleBuildResult, error) {
+
+	// moduleDir é onde o módulo vive dentro de /app; rootMounted diz se a árvore montada é a raiz
+	// do repositório (com o .git) ou apenas o diretório do módulo.
+	moduleDir := module
+	rootMounted := m.ReactorMode
+	if !m.ReactorMode && modulePath != "" {
+		moduleDir = modulePath
+		rootMounted = true
+	}
 
 	var stages []PipelineStage
 	if m.ReactorMode {
@@ -45,17 +67,21 @@ func (m *Maven) FullBuild(ctx context.Context,
 			},
 		}
 	} else {
-		stages = []PipelineStage{
-			{
+		// Sem versão informada não se reescreve o pom: é o caso do check de qualidade, que não
+		// publica nada. A versão declarada no pom -- a última publicada -- é a que vale, e é ela
+		// que o Sonar registra como projectVersion. Forçar uma constante aqui congelaria a âncora
+		// do período de new code em PREVIOUS_VERSION.
+		if version != "" {
+			stages = append(stages, PipelineStage{
 				DisplayName: "Set version",
 				Goals:       []string{"versions:set"},
 				Options:     []string{"-DnewVersion=" + version, "-DgenerateBackupPoms=false"},
-			},
-			{
-				DisplayName: "Build and Test",
-				Goals:       []string{"clean", "verify"},
-			},
+			})
 		}
+		stages = append(stages, PipelineStage{
+			DisplayName: "Build and Test",
+			Goals:       []string{"clean", "verify"},
+		})
 	}
 
 	if sonarConfig != nil {
@@ -94,10 +120,11 @@ func (m *Maven) FullBuild(ctx context.Context,
 			BaseURL:   gitlabConfig.Host,
 			Token:     token,
 			ProjectID: gitlabConfig.ProjectID,
+			Ref:       gitlabConfig.Ref,
 		}
 	}
 
-	buildResult, err := m.executeStages(ctx, source, module, stages, gitlabClient, commitSha)
+	buildResult, err := m.executeStages(ctx, source, module, moduleDir, rootMounted, stages, gitlabClient, commitSha)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +135,10 @@ func (m *Maven) FullBuild(ctx context.Context,
 // reactorOptions builds the selectors every mvn invocation needs in reactor mode: the target module
 // and the revision that stands in for ${revision} in the parent POM.
 func reactorOptions(module, version string, extra ...string) []string {
-	options := []string{"-pl", module, "-Drevision=" + version}
+	options := []string{"-pl", module}
+	if version != "" {
+		options = append(options, "-Drevision="+version)
+	}
 	return append(options, extra...)
 }
 
@@ -130,7 +160,11 @@ func reactorOptions(module, version string, extra ...string) []string {
 // `-pl <módulo>` sem `-am` e já depende disso -- é por isso que o pom-esqueleto do reactor
 // amarra o maven-install-plugin à fase `verify`.
 func sonarReactorOptions(module, version string) []string {
-	return []string{"-f", module + "/pom.xml", "-Drevision=" + version}
+	options := []string{"-f", module + "/pom.xml"}
+	if version != "" {
+		options = append(options, "-Drevision="+version)
+	}
+	return options
 }
 
 func (m *Maven) configureDockerPublish(
@@ -152,8 +186,12 @@ func (m *Maven) configureDockerPublish(
 }
 
 func (m *Maven) configureSonar(ctx context.Context, sonarConfig *SonarConfig, module string) (PipelineStage, error) {
+	// A chave do projeto no Sonar não é derivável do módulo quando o path no repositório difere do
+	// nome do target (ex: target `beneficios` em `apps/beneficios`), então quem chama pode informá-la.
 	moduleSonarConfig := *sonarConfig
-	moduleSonarConfig.ProjectKey = module
+	if moduleSonarConfig.ProjectKey == "" {
+		moduleSonarConfig.ProjectKey = module
+	}
 	sonarOptions, err := m.buildSonarOptions(ctx, &moduleSonarConfig)
 	if err != nil {
 		return PipelineStage{}, err
@@ -194,22 +232,30 @@ func (m *Maven) executeStages(
 	ctx context.Context,
 	source *dagger.Directory,
 	module string,
+	moduleDir string,
+	rootMounted bool,
 	stages []PipelineStage,
 	gitlabClient *gitlabci.Client,
 	commitSha string,
 ) (*ModuleBuildResult, error) {
-	// Outside reactor mode `source` is the module itself, mounted under its own name. In reactor
-	// mode `source` is the whole reactor: -pl/-am need every sibling module on disk, so the root is
-	// mounted at /app and that is also where mvn runs from.
-	mountPath := fmt.Sprintf("%s/%s", BaseWorkdir, module)
+	// Com rootMounted, `source` é a raiz do repositório e vai inteira para /app -- é o que o
+	// reactor precisa (-pl/-am exigem os módulos irmãos em disco) e o que dá ao Sonar um .git
+	// coerente, já que aí todo arquivo fica no mesmo caminho que tem no índice do git.
+	// Sem ele, `source` é o próprio diretório do módulo e é montado sob o nome dele.
+	mountPath := fmt.Sprintf("%s/%s", BaseWorkdir, moduleDir)
 	excludes := []string{"target"}
-	if m.ReactorMode {
+	if rootMounted {
 		mountPath = BaseWorkdir
 		excludes = []string{"target", "**/target"}
 	}
+	// O reactor roda da raiz e seleciona o módulo por -pl; os demais rodam dentro do módulo.
+	workdir := fmt.Sprintf("%s/%s", BaseWorkdir, moduleDir)
+	if m.ReactorMode {
+		workdir = BaseWorkdir
+	}
 	stageContainer := m.Container().
 		WithDirectory(mountPath, source, dagger.ContainerWithDirectoryOpts{Exclude: excludes}).
-		WithWorkdir(mountPath)
+		WithWorkdir(workdir)
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
 		statusName := ""
@@ -217,7 +263,7 @@ func (m *Maven) executeStages(
 			statusName = fmt.Sprintf("%s: %s", module, stage.DisplayName)
 			_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateRunning, statusName, "")
 		}
-		buildResultStage, err := m.executeStage(ctx, module, stage, stageContainer)
+		buildResultStage, err := m.executeStage(ctx, moduleDir, stage, stageContainer)
 		if statusName != "" {
 			if err != nil {
 				_ = gitlabClient.SetCommitStatus(commitSha, gitlabci.StateFailed, statusName, "")
@@ -240,7 +286,7 @@ func (m *Maven) executeStages(
 // executeStage runs the Maven goals for a stage and captures outputs.
 func (m *Maven) executeStage(
 	ctx context.Context,
-	module string,
+	moduleDir string,
 	stage PipelineStage,
 	stageContainer *dagger.Container) (*StageBuildResult, error) {
 	stageContainer = stageContainer.
@@ -254,8 +300,7 @@ func (m *Maven) executeStage(
 		// Non-fatal, stderr might be empty
 		stderr = ""
 	}
-	moduleDir := fmt.Sprintf("%s/%s", BaseWorkdir, module)
-	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/target", moduleDir))
+	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/%s/target", BaseWorkdir, moduleDir))
 	return &StageBuildResult{
 		Container: stageContainer,
 		Artifacts: artifactsDir,

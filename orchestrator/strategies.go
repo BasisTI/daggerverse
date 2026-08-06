@@ -11,9 +11,27 @@ import (
 	"github.com/BasisTI/daggerverse/pipeline/imageref"
 )
 
-// checkVersion é a versão usada nos builds de quality check, que não publicam
-// imagem nenhuma. Reproduz o "0.0.0-check" dos orchestrators por projeto.
-const checkVersion = "0.0.0-check"
+// qualityModulePath informa à estratégia onde o target vive dentro da raiz do
+// repositório, que é o que o check de qualidade monta.
+//
+// No modo reactor o próprio `module` já é o path dentro do reactor e a montagem
+// da raiz é implícita, então não há nada a informar.
+func qualityModulePath(rt config.ResolvedTarget, sourcePath string) string {
+	if rt.Reactor {
+		return ""
+	}
+	return moduleSubpath(sourcePath)
+}
+
+// moduleSubpath normaliza o path do target para uso como subdiretório do mount:
+// a raiz do repositório vira string vazia, que é como maven e npm expressam
+// "o projeto é a própria árvore montada".
+func moduleSubpath(sourcePath string) string {
+	if sourcePath == pipeline.RepoRoot {
+		return ""
+	}
+	return sourcePath
+}
 
 // buildStrategy escolhe a estratégia de publish do target. As estratégias fecham
 // sobre o ResolvedTarget: a lib pipeline não carrega mais nenhum campo de
@@ -80,7 +98,7 @@ func mavenOpts(rt config.ResolvedTarget) dagger.MavenOpts {
 // como faziam os orchestrators por projeto.
 func mavenSource(source *dagger.Directory) *dagger.Directory {
 	return dag.Directory().WithDirectory("/", source, dagger.DirectoryWithDirectoryOpts{
-		Exclude: []string{"target/"},
+		Exclude: []string{"target/", "**/target/"},
 	})
 }
 
@@ -104,12 +122,20 @@ func publishMaven(rt config.ResolvedTarget, group string) pipeline.BuildStrategy
 func checkMaven(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
-		module, sonarHost string, sonarToken *dagger.Secret,
+		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
 		m := dag.Maven(mavenOpts(rt))
-		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, nil)
-		result := m.FullBuild(mavenSource(source), mavenModule(rt, module), "", checkVersion,
-			dagger.MavenFullBuildOpts{SonarConfig: sonarConfig})
+		// A chave do Sonar é o nome do target, que não coincide com o path quando
+		// eles divergem (target `beneficios` em `apps/beneficios`).
+		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, nil,
+			dagger.MavenNewSonarConfigOpts{ProjectKey: module})
+		// Versão vazia: o check não publica nada e não reescreve o pom. A versão
+		// declarada nele -- a última publicada -- é a que o Sonar registra.
+		result := m.FullBuild(mavenSource(source), mavenModule(rt, module), "", "",
+			dagger.MavenFullBuildOpts{
+				SonarConfig: sonarConfig,
+				ModulePath:  qualityModulePath(rt, sourcePath),
+			})
 		_, err := result.ImageURL(ctx)
 		return err
 	}
@@ -144,9 +170,11 @@ func publishNpm(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*
 func checkNpm(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
-		module, sonarHost string, sonarToken *dagger.Secret,
+		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		n := dag.Npm(source, npmOpts(rt))
+		opts := npmOpts(rt)
+		opts.ModulePath = moduleSubpath(sourcePath)
+		n := dag.Npm(source, opts)
 		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, module)
 		result := n.FullBuild(dagger.NpmFullBuildOpts{SonarConfig: sonarConfig})
 		_, err := result.ImageURL(ctx)
@@ -185,9 +213,13 @@ func publishUv(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*d
 func checkUv(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
-		module, sonarHost string, sonarToken *dagger.Secret,
+		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		u := dag.Uv(source, uvOpts(rt))
+		// TODO(scm): o módulo uv ainda ancora uv.lock e pyproject.toml na raiz do
+		// Source, então receber a raiz do repositório quebraria essas leituras.
+		// Até ele virar path-aware como maven e npm, o subdiretório é recortado
+		// aqui -- ou seja, targets uv seguem sem .git e sem blame no Sonar.
+		u := dag.Uv(source.Directory(sourcePath), uvOpts(rt))
 		sonarConfig := u.NewSonarConfig(sonarHost, sonarToken, module)
 		result := u.FullBuild(dagger.UvFullBuildOpts{SonarConfig: sonarConfig})
 		_, err := result.ImageURL(ctx)

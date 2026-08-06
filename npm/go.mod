@@ -2,7 +2,7 @@ module dagger/npm
 
 go 1.26.1
 
-require github.com/BasisTI/daggerverse/gitlabci v0.2.1
+require github.com/BasisTI/daggerverse/gitlabci v0.2.2
 
 require (
 	github.com/BasisTI/daggerverse/pipeline v0.9.1

@@ -96,10 +96,15 @@ type GitLabConfig struct {
 	Host        string         // URL base (ex: "https://gitlab.com")
 	TokenSecret *dagger.Secret // Token com scope `api`
 	ProjectID   string         // ID numérico ou path URL-encoded
+	Ref         string         // Branch da pipeline (ex: CI_COMMIT_REF_NAME)
 }
 
 // NewGitLabConfig validates the provided inputs and returns a GitLab configuration for commit statuses.
-func (n *Npm) NewGitLabConfig(host string, tokenSecret *dagger.Secret, projectID string) (*GitLabConfig, error) {
+func (n *Npm) NewGitLabConfig(host string, tokenSecret *dagger.Secret, projectID string,
+	// Branch da pipeline que reporta. Sem ela o status terminal pode ser anexado a
+	// outra pipeline do mesmo commit, deixando a original travada em "running".
+	// +optional
+	ref string) (*GitLabConfig, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is empty")
 	}
@@ -113,6 +118,7 @@ func (n *Npm) NewGitLabConfig(host string, tokenSecret *dagger.Secret, projectID
 		Host:        host,
 		TokenSecret: tokenSecret,
 		ProjectID:   projectID,
+		Ref:         ref,
 	}, nil
 }
 

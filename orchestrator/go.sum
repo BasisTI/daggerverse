@@ -1,9 +1,9 @@
 github.com/99designs/gqlgen v0.17.89 h1:KzEcxPiMgQoMw3m/E85atUEHyZyt0PbAflMia5Kw8z8=
 github.com/99designs/gqlgen v0.17.89/go.mod h1:GFqruTVGB7ZTdrf1uzOagpXbY7DrEt1pIxnTdhIbWvQ=
-github.com/BasisTI/daggerverse/gitlabci v0.2.1 h1:IFZ9p/7uQ4W9qC0PGgGf7Y1ihe0RLz0g0M235OuIejw=
-github.com/BasisTI/daggerverse/gitlabci v0.2.1/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
-github.com/BasisTI/daggerverse/pipeline v0.9.3 h1:8osqmO/18zc3btAkAwAeq7g7+7qyfhG8hsLl449J9qA=
-github.com/BasisTI/daggerverse/pipeline v0.9.3/go.mod h1:bbRCZY7WSP2vz0fTHTS+jplfiVYIQENiLQWqeGnf4WU=
+github.com/BasisTI/daggerverse/gitlabci v0.2.2 h1:dpUPfpZP4ue2Q5a/WWq+kMNyqtO1ra/WyQhVofqHLzo=
+github.com/BasisTI/daggerverse/gitlabci v0.2.2/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
+github.com/BasisTI/daggerverse/pipeline v0.9.4 h1:JGPhqsEER0JBlTTeDc1LX6pIqcvj+UWEYc+LUPLRm7U=
+github.com/BasisTI/daggerverse/pipeline v0.9.4/go.mod h1:bbRCZY7WSP2vz0fTHTS+jplfiVYIQENiLQWqeGnf4WU=
 github.com/Khan/genqlient v0.8.1 h1:wtOCc8N9rNynRLXN3k3CnfzheCUNKBcvXmVv5zt6WCs=
 github.com/Khan/genqlient v0.8.1/go.mod h1:R2G6DzjBvCbhjsEajfRjbWdVglSH/73kSivC9TLWVjU=
 github.com/agnivade/levenshtein v1.2.1 h1:EHBY3UOn1gwdy/VbFwgo4cxecRznFk7fKWN1KOX7eoM=

@@ -90,6 +90,14 @@ func (o *Orchestrator) CheckQuality(
 	// ID numérico do projeto no GitLab (ex: CI_PROJECT_ID).
 	// +optional
 	gitlabProjectId string,
+	// Branch da pipeline que está reportando (ex: CI_COMMIT_REF_NAME).
+	//
+	// Sem ela o GitLab anexa cada commit status à pipeline mais recente do SHA. Se
+	// uma segunda pipeline nascer no mesmo commit durante o build -- um push em
+	// develop que também é head de uma MR, por exemplo --, o status terminal vai
+	// para a pipeline nova e a original trava em "running" para sempre.
+	// +optional
+	gitlabRef string,
 ) error {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -106,7 +114,7 @@ func (o *Orchestrator) CheckQuality(
 		fmt.Println("✅ Nenhum target com sonar = true. Nada a verificar.")
 		return nil
 	}
-	glClient, err := newGitLabClient(ctx, gitlabHost, gitlabToken, gitlabProjectId)
+	glClient, err := newGitLabClient(ctx, gitlabHost, gitlabToken, gitlabProjectId, gitlabRef)
 	if err != nil {
 		return err
 	}
@@ -141,6 +149,14 @@ func (o *Orchestrator) PublishAll(
 	// ID numérico do projeto no GitLab (ex: CI_PROJECT_ID).
 	// +optional
 	gitlabProjectId string,
+	// Branch da pipeline que está reportando (ex: CI_COMMIT_REF_NAME).
+	//
+	// Sem ela o GitLab anexa cada commit status à pipeline mais recente do SHA. Se
+	// uma segunda pipeline nascer no mesmo commit durante o build -- um push em
+	// develop que também é head de uma MR, por exemplo --, o status terminal vai
+	// para a pipeline nova e a original trava em "running" para sempre.
+	// +optional
+	gitlabRef string,
 	// URL do repositório Git com credenciais para push das versões bumpadas.
 	// Se vazio, o bump de versão não é commitado.
 	// +optional
@@ -161,7 +177,7 @@ func (o *Orchestrator) PublishAll(
 	if err != nil {
 		return "", err
 	}
-	glClient, err := newGitLabClient(ctx, gitlabHost, gitlabToken, gitlabProjectId)
+	glClient, err := newGitLabClient(ctx, gitlabHost, gitlabToken, gitlabProjectId, gitlabRef)
 	if err != nil {
 		return "", err
 	}
@@ -284,7 +300,7 @@ func getSubDirectory(source *dagger.Directory, path string) *dagger.Directory {
 
 // newGitLabClient monta o cliente de commit statuses, ou (nil, nil) quando a
 // configuração do GitLab não foi informada.
-func newGitLabClient(ctx context.Context, gitlabHost string, gitlabToken *dagger.Secret, gitlabProjectID string) (*gitlabci.Client, error) {
+func newGitLabClient(ctx context.Context, gitlabHost string, gitlabToken *dagger.Secret, gitlabProjectID, gitlabRef string) (*gitlabci.Client, error) {
 	if gitlabHost == "" || gitlabToken == nil || gitlabProjectID == "" {
 		return nil, nil
 	}
@@ -296,6 +312,7 @@ func newGitLabClient(ctx context.Context, gitlabHost string, gitlabToken *dagger
 		BaseURL:   gitlabHost,
 		Token:     token,
 		ProjectID: gitlabProjectID,
+		Ref:       gitlabRef,
 	}, nil
 }
 

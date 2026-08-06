@@ -470,7 +470,7 @@ func TestNewGitLabClientRequiresFullConfig(t *testing.T) {
 		{"nada", "", nil, ""},
 	} {
 		t.Run(tc.nome, func(t *testing.T) {
-			client, err := newGitLabClient(ctx, tc.host, tc.token, tc.projectID)
+			client, err := newGitLabClient(ctx, tc.host, tc.token, tc.projectID, "develop")
 			if err != nil {
 				t.Fatalf("configuração incompleta não deveria falhar: %v", err)
 			}
@@ -480,7 +480,7 @@ func TestNewGitLabClientRequiresFullConfig(t *testing.T) {
 		})
 	}
 
-	client, err := newGitLabClient(ctx, "https://git.basis.com.br", token, "42")
+	client, err := newGitLabClient(ctx, "https://git.basis.com.br", token, "42", "develop")
 	if err != nil {
 		t.Fatalf("configuração completa: %v", err)
 	}

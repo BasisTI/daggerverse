@@ -24,7 +24,27 @@ type Npm struct {
 	UseCache      bool
 	Source        *dagger.Directory
 	NodeContainer *dagger.Container
+	// ModulePath é o caminho do projeto relativo à raiz do repositório. Quando preenchido, Source é
+	// a RAIZ DO REPOSITÓRIO e não o diretório do projeto. Ver a doc do parâmetro em New.
+	ModulePath string
 	// TODO: put BuildResultDir here (example: "dist")
+}
+
+// Workdir é o diretório onde os comandos rodam dentro do container: /app quando Source já é o
+// projeto, /app/<ModulePath> quando Source é a raiz do repositório.
+func (n *Npm) Workdir() string {
+	if n.ModulePath == "" {
+		return DefaultWorkdir
+	}
+	return DefaultWorkdir + "/" + n.ModulePath
+}
+
+// packageJSONPath é o caminho do package.json dentro de Source, que segue a mesma regra do Workdir.
+func (n *Npm) packageJSONPath() string {
+	if n.ModulePath == "" {
+		return "package.json"
+	}
+	return n.ModulePath + "/package.json"
 }
 
 type packageJSON struct {
@@ -44,25 +64,36 @@ func New(
 	runImage string,
 	// Use Npm Cache
 	// +default=true
-	useCache bool) *Npm {
+	useCache bool,
+	// Caminho do projeto relativo à raiz do repositório. Quando informado, `source` é a RAIZ DO
+	// REPOSITÓRIO e não o diretório do projeto: a árvore inteira é montada em /app e os comandos
+	// rodam em /app/<modulePath>.
+	//
+	// É o que permite ao Sonar fazer blame. O .git só existe na raiz e o índice do git referencia
+	// os arquivos pelo caminho a partir dela, então montar só o diretório do projeto (com ou sem o
+	// .git dentro) deixa o scanner sem SCM -- e sem SCM não há análise de PR nem período de new
+	// code por diff.
+	// +optional
+	modulePath string) *Npm {
 	return &Npm{
 		BuildImage: buildImage,
 		RunImage:   runImage,
 		UseCache:   useCache,
 		Source:     source,
+		ModulePath: modulePath,
 	}
 }
 
 // NewContainer creates a fresh container primed with the project source and optional cache.
 func (n *Npm) NewContainer() *dagger.Container {
-	container := dag.Container().From(n.BuildImage).WithWorkdir(DefaultWorkdir)
+	container := dag.Container().From(n.BuildImage)
 	if n.UseCache {
 		container = container.WithMountedCache("/root/.npm", dag.CacheVolume(DefaultNpmCacheName))
 	}
 	if n.Source != nil {
-		container = container.WithDirectory(DefaultWorkdir, n.Source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"node_modules", "dist"}})
+		container = container.WithDirectory(DefaultWorkdir, n.Source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"**/node_modules", "**/dist"}})
 	}
-	return container
+	return container.WithWorkdir(n.Workdir())
 }
 
 // Container returns the memoised container, initialising it if needed.
@@ -80,7 +111,7 @@ func (n *Npm) GetAngularDistDir() *dagger.Directory {
 
 // getProjectName reads the project name from package.json.
 func (n *Npm) getProjectName(ctx context.Context) string {
-	contents, err := n.Source.File("package.json").Contents(ctx)
+	contents, err := n.Source.File(n.packageJSONPath()).Contents(ctx)
 	if err != nil {
 		return ""
 	}
@@ -149,6 +180,7 @@ func (n *Npm) FullBuild(ctx context.Context,
 			BaseURL:   gitlabConfig.Host,
 			Token:     token,
 			ProjectID: gitlabConfig.ProjectID,
+			Ref:       gitlabConfig.Ref,
 		}
 	}
 
@@ -235,13 +267,13 @@ func (n *Npm) executeStage(ctx context.Context, container *dagger.Container, sta
 	if stage.Image != "" {
 		returnContainer = container
 		stageContainer = dag.Container().From(stage.Image)
-		containerOpts := dagger.ContainerWithDirectoryOpts{Exclude: []string{"node_modules", DefaultBuildDir}}
+		containerOpts := dagger.ContainerWithDirectoryOpts{Exclude: []string{"**/node_modules", "**/" + DefaultBuildDir}}
 		if stage.Owner != "" {
 			containerOpts.Owner = stage.Owner
 		}
 		stageContainer = stageContainer.
 			WithDirectory(DefaultWorkdir, n.Source, containerOpts).
-			WithWorkdir(DefaultWorkdir)
+			WithWorkdir(n.Workdir())
 	} else {
 		stageContainer = container
 	}
@@ -259,7 +291,7 @@ func (n *Npm) executeStage(ctx context.Context, container *dagger.Container, sta
 	if returnContainer == nil {
 		returnContainer = stageContainer
 	}
-	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/%s", DefaultWorkdir, DefaultBuildDir))
+	artifactsDir := stageContainer.Directory(fmt.Sprintf("%s/%s", n.Workdir(), DefaultBuildDir))
 	return &StageResult{
 		Container: returnContainer,
 		Stdout:    stdout,
@@ -295,7 +327,7 @@ func (n *Npm) buildSonarOptions(ctx context.Context, config *SonarConfig) ([]str
 
 // withPackageJsonVersion reads package.json, replaces the version field and returns the updated source directory.
 func (n *Npm) withPackageJsonVersion(ctx context.Context, version string) (*dagger.Directory, error) {
-	contents, err := n.Source.File("package.json").Contents(ctx)
+	contents, err := n.Source.File(n.packageJSONPath()).Contents(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read package.json: %w", err)
 	}
@@ -309,14 +341,14 @@ func (n *Npm) withPackageJsonVersion(ctx context.Context, version string) (*dagg
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize package.json: %w", err)
 	}
-	return n.Source.WithNewFile("package.json", string(updated)+"\n"), nil
+	return n.Source.WithNewFile(n.packageJSONPath(), string(updated)+"\n"), nil
 }
 
 func (n *Npm) GetVersion(ctx context.Context) (string, error) {
 	if n.Source == nil {
 		return "", fmt.Errorf("cannot get NPM version: npm directory is not set")
 	}
-	pkgJSON, err := n.Source.File("package.json").Contents(ctx)
+	pkgJSON, err := n.Source.File(n.packageJSONPath()).Contents(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to read package.json from directory: %w", err)
 	}
