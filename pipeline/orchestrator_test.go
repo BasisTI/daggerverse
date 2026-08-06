@@ -177,12 +177,11 @@ func TestCheckQualityTriggersAndMounts(t *testing.T) {
 	var checked []string
 	targets := map[string]QualityTarget[string, string]{
 		"app": {
-			Check: func(_ context.Context, source, module, _ string, _ string) error {
-				checked = append(checked, module+"@"+source)
+			Check: func(_ context.Context, source, module, sourcePath, _ string, _ string) error {
+				checked = append(checked, module+"@"+source+":"+sourcePath)
 				return nil
 			},
 			Path:              "apps/app",
-			MountPath:         RepoRoot,
 			ExtraTriggerPaths: []string{"libs/shared"},
 		},
 	}
@@ -195,15 +194,17 @@ func TestCheckQualityTriggersAndMounts(t *testing.T) {
 	if !reflect.DeepEqual(f.receivedPaths, want) {
 		t.Errorf("ProjectConfig enviado = %v, quer %v", f.receivedPaths, want)
 	}
-	if !reflect.DeepEqual(checked, []string{"app@src"}) {
-		t.Errorf("checks = %v, quer exatamente um check com a raiz montada", checked)
+	// A raiz do repositório ("src") vai inteira para a estratégia, com o path do target ao lado --
+	// é o recorte que quebraria o .git e o blame do Sonar.
+	if !reflect.DeepEqual(checked, []string{"app@src:apps/app"}) {
+		t.Errorf("checks = %v, quer exatamente um check com a raiz e o sourcePath", checked)
 	}
 }
 
 func TestCheckQualityCollectsFailures(t *testing.T) {
 	f := &fakeOps{changed: []string{"a", "b"}}
-	failing := func(_ context.Context, _, _, _ string, _ string) error { return errors.New("boom") }
-	ok := func(_ context.Context, _, _, _ string, _ string) error { return nil }
+	failing := func(_ context.Context, _, _, _, _ string, _ string) error { return errors.New("boom") }
+	ok := func(_ context.Context, _, _, _, _ string, _ string) error { return nil }
 	targets := map[string]QualityTarget[string, string]{
 		"a": {Check: failing},
 		"b": {Check: ok},

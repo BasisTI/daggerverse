@@ -151,9 +151,10 @@ func PublishAll[Dir any, Secret any](
 
 // CheckQuality roda testes e análise estática (Sonar) nos projetos alterados.
 //
-// Assim como em PublishAll, o diretório entregue a cada QualityStrategy é o
-// MountPath efetivo do target, e GetSubDirectory deve tratar RepoRoot (".")
-// devolvendo o próprio source.
+// Ao contrário de PublishAll, o diretório entregue a cada QualityStrategy é a RAIZ DO
+// REPOSITÓRIO, acompanhada do MountPath efetivo do target como `sourcePath`. O recorte do
+// subdiretório fica a cargo da estratégia, que monta a árvore inteira para preservar o .git e os
+// caminhos do índice do git -- sem isso não há blame, e sem blame não há análise de PR.
 func CheckQuality[Dir any, Secret any](
 	ctx context.Context,
 	ops DaggerOps[Dir, Secret],
@@ -196,7 +197,7 @@ func CheckQuality[Dir any, Secret any](
 		statusName := targetName + ": Quality"
 		setStatus(ops.GitLabClient, commitSha, gitlabci.StateRunning, statusName)
 		fmt.Printf("🔍 [Quality] Verificando: %s\n", targetName)
-		if checkErr := target.Check(ctx, ops.GetSubDirectory(source, mount), targetName, sonarHost, sonarToken); checkErr != nil {
+		if checkErr := target.Check(ctx, source, targetName, mount, sonarHost, sonarToken); checkErr != nil {
 			setStatus(ops.GitLabClient, commitSha, gitlabci.StateFailed, statusName)
 			if stopOnFirstFail {
 				return fmt.Errorf("quality gate falhou para %s: %w", targetName, checkErr)

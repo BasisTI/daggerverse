@@ -90,9 +90,14 @@ func (bt BuildTarget[D, S]) VersionFilePath(key string) string {
 }
 
 // QualityStrategy é a assinatura genérica de um check de qualidade.
+//
+// Diferente de BuildStrategy, recebe a RAIZ DO REPOSITÓRIO em `source` e o caminho do target
+// dentro dela em `sourcePath`, em vez de receber o subdiretório já recortado. O motivo é o SCM: a
+// análise do Sonar precisa do .git, que só existe na raiz, e precisa que os arquivos estejam no
+// mesmo caminho que têm no índice do git -- recortar o subdiretório quebra as duas coisas.
 type QualityStrategy[Dir any, Secret any] func(
 	ctx context.Context, source Dir,
-	module, sonarHost string, sonarToken Secret,
+	module, sourcePath, sonarHost string, sonarToken Secret,
 ) error
 
 // QualityTarget associa um check de qualidade a um path opcional no repositório.

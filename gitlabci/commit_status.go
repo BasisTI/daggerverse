@@ -21,6 +21,15 @@ type Client struct {
 	BaseURL   string // ex: "https://gitlab.com" (sem /api/v4)
 	Token     string
 	ProjectID string
+	// Ref é a branch da pipeline que está reportando (ex: CI_COMMIT_REF_NAME).
+	//
+	// Sem ele o GitLab anexa cada status à pipeline MAIS RECENTE do SHA, e não à
+	// que fez a chamada. Quando uma segunda pipeline nasce no mesmo commit no meio
+	// de um build -- típico de um push em develop que também é head de uma MR --,
+	// o status terminal vai para a pipeline nova e o `running` da original fica
+	// órfão, sem ninguém para fechá-lo: a pipeline trava em "running" para sempre.
+	// Informar o ref fixa os dois POSTs na mesma pipeline.
+	Ref string
 }
 
 // SetCommitStatus envia POST /api/v4/projects/:id/statuses/:sha
@@ -31,6 +40,9 @@ func (c *Client) SetCommitStatus(sha string, state State, name, description stri
 	params := url.Values{}
 	params.Set("state", string(state))
 	params.Set("name", name)
+	if c.Ref != "" {
+		params.Set("ref", c.Ref)
+	}
 	if description != "" {
 		params.Set("description", description)
 	}
