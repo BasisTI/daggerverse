@@ -3,7 +3,7 @@ module dagger/orchestrator
 go 1.26.4
 
 require (
-	github.com/BasisTI/daggerverse/gitlabci v0.2.2
+	github.com/BasisTI/daggerverse/gitlabci v0.3.0
 	github.com/BasisTI/daggerverse/pipeline v0.9.4
 	github.com/Khan/genqlient v0.8.1
 	github.com/dagger/otel-go v1.43.0
