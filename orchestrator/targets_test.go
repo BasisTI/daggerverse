@@ -282,7 +282,7 @@ func TestQualityTargetsFollowSonarFlag(t *testing.T) {
 	for fixture, want := range cases {
 		t.Run(fixture, func(t *testing.T) {
 			cfg := loadTestdata(t, fixture)
-			targets, err := qualityTargets(cfg)
+			targets, err := qualityTargets(cfg, nil)
 			if err != nil {
 				t.Fatalf("qualityTargets: %v", err)
 			}
@@ -308,7 +308,7 @@ func TestQualityTargetsFollowSonarFlag(t *testing.T) {
 // também precisa da raiz montada.
 func TestQualityTargetsMountPath(t *testing.T) {
 	cfg := loadTestdata(t, "triagem")
-	targets, err := qualityTargets(cfg)
+	targets, err := qualityTargets(cfg, nil)
 	if err != nil {
 		t.Fatalf("qualityTargets: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestUnsupportedFeaturesFailLoudly(t *testing.T) {
 		{Name: "scraper", Type: config.TypeDockerfile, QualityType: config.TypeDockerfile, Sonar: true},
 		{Name: "dbt", Type: config.TypeCustom, QualityType: config.TypeCustom, Sonar: true},
 	} {
-		if _, err := qualityStrategy(rt); err == nil {
+		if _, err := qualityStrategy(rt, nil); err == nil {
 			t.Errorf("%s: esperado erro sem build system de quality", rt.Name)
 		} else if !strings.Contains(err.Error(), "sonar") || !strings.Contains(err.Error(), "quality-type") {
 			t.Errorf("%s: mensagem pouco clara: %v", rt.Name, err)
@@ -347,14 +347,14 @@ func TestQualityStrategyDispatchesByQualityType(t *testing.T) {
 		rt := config.ResolvedTarget{
 			Name: "scraper", Type: config.TypeDockerfile, QualityType: qt, Sonar: true,
 		}
-		if _, err := qualityStrategy(rt); err != nil {
+		if _, err := qualityStrategy(rt, nil); err != nil {
 			t.Errorf("dockerfile com quality-type %q deveria ter estratégia: %v", qt, err)
 		}
 	}
 
 	// E a fixture real: os scrapers do licitacao voltam a ter check de qualidade.
 	cfg := loadTestdata(t, "licitacao")
-	targets, err := qualityTargets(cfg)
+	targets, err := qualityTargets(cfg, nil)
 	if err != nil {
 		t.Fatalf("qualityTargets: %v", err)
 	}

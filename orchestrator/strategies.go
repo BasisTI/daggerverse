@@ -33,6 +33,27 @@ func moduleSubpath(sourcePath string) string {
 	return sourcePath
 }
 
+// pullRequestOptions monta os `-Dsonar.pullrequest.*` que transformam a análise de uma branch
+// qualquer em análise de Pull Request.
+//
+// É o que faz o SonarQube (a) calcular código novo pelo diff contra a base, em vez do período de
+// new code do projeto, e (b) ter um objeto PR onde pendurar o comentário na MR. Sem esses três
+// parâmetros a análise de uma MR aterrissa na branch principal do projeto e não há o que decorar --
+// o binding com o GitLab e o "monorepository support" são pré-requisitos, não gatilhos.
+//
+// Devolve nil se qualquer um dos três faltar: uma análise de PR pela metade é rejeitada pelo
+// scanner, e cair de volta na análise de branch é o comportamento correto fora de MR.
+func pullRequestOptions(key, branch, base string) []string {
+	if key == "" || branch == "" || base == "" {
+		return nil
+	}
+	return []string{
+		"-Dsonar.pullrequest.key=" + key,
+		"-Dsonar.pullrequest.branch=" + branch,
+		"-Dsonar.pullrequest.base=" + base,
+	}
+}
+
 // buildStrategy escolhe a estratégia de publish do target. As estratégias fecham
 // sobre o ResolvedTarget: a lib pipeline não carrega mais nenhum campo de
 // configuração opaco.
@@ -57,14 +78,14 @@ func buildStrategy(rt config.ResolvedTarget, group string) (pipeline.BuildStrate
 // cuja imagem sai de um Dockerfile próprio mas cujo código é um projeto Python
 // declara `quality-type = "uv"` e roda checkUv normalmente. Sem `quality-type`,
 // QualityType é igual a Type e o despacho é o de sempre.
-func qualityStrategy(rt config.ResolvedTarget) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
+func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
 	switch rt.QualityType {
 	case config.TypeMaven:
-		return checkMaven(rt), nil
+		return checkMaven(rt, sonarExtra), nil
 	case config.TypeNpm:
-		return checkNpm(rt), nil
+		return checkNpm(rt, sonarExtra), nil
 	case config.TypeUv:
-		return checkUv(rt), nil
+		return checkUv(rt, sonarExtra), nil
 	default:
 		return nil, fmt.Errorf(
 			"target %q: sonar = true não é suportado em targets type = %q sem quality-type "+
@@ -119,7 +140,7 @@ func publishMaven(rt config.ResolvedTarget, group string) pipeline.BuildStrategy
 	}
 }
 
-func checkMaven(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkMaven(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
@@ -127,7 +148,7 @@ func checkMaven(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Direc
 		m := dag.Maven(mavenOpts(rt))
 		// A chave do Sonar é o nome do target, que não coincide com o path quando
 		// eles divergem (target `beneficios` em `apps/beneficios`).
-		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, nil,
+		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, sonarExtra,
 			dagger.MavenNewSonarConfigOpts{ProjectKey: module})
 		// Versão vazia: o check não publica nada e não reescreve o pom. A versão
 		// declarada nele -- a última publicada -- é a que o Sonar registra.
@@ -167,7 +188,7 @@ func publishNpm(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*
 	}
 }
 
-func checkNpm(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkNpm(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
@@ -175,7 +196,8 @@ func checkNpm(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directo
 		opts := npmOpts(rt)
 		opts.ModulePath = moduleSubpath(sourcePath)
 		n := dag.Npm(source, opts)
-		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, module)
+		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, module,
+			dagger.NpmNewSonarConfigOpts{ExtraOptions: sonarExtra})
 		result := n.FullBuild(dagger.NpmFullBuildOpts{SonarConfig: sonarConfig})
 		_, err := result.ImageURL(ctx)
 		return err
@@ -210,7 +232,7 @@ func publishUv(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*d
 	}
 }
 
-func checkUv(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkUv(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
@@ -220,7 +242,8 @@ func checkUv(rt config.ResolvedTarget) pipeline.QualityStrategy[*dagger.Director
 		// Até ele virar path-aware como maven e npm, o subdiretório é recortado
 		// aqui -- ou seja, targets uv seguem sem .git e sem blame no Sonar.
 		u := dag.Uv(source.Directory(sourcePath), uvOpts(rt))
-		sonarConfig := u.NewSonarConfig(sonarHost, sonarToken, module)
+		sonarConfig := u.NewSonarConfig(sonarHost, sonarToken, module,
+			dagger.UvNewSonarConfigOpts{ExtraOptions: sonarExtra})
 		result := u.FullBuild(dagger.UvFullBuildOpts{SonarConfig: sonarConfig})
 		_, err := result.ImageURL(ctx)
 		return err

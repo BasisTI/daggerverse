@@ -42,7 +42,7 @@ func buildTargets(cfg *config.Config) (map[string]buildTarget, error) {
 
 // qualityTargets converte os targets com `sonar = true` no mapa de
 // QualityTargets consumido por pipeline.CheckQuality.
-func qualityTargets(cfg *config.Config) (map[string]qualityTarget, error) {
+func qualityTargets(cfg *config.Config, sonarExtra []string) (map[string]qualityTarget, error) {
 	targets := make(map[string]qualityTarget, len(cfg.Targets))
 	for _, name := range cfg.SonarTargetNames() {
 		rt, err := cfg.Resolve(name)
@@ -52,7 +52,7 @@ func qualityTargets(cfg *config.Config) (map[string]qualityTarget, error) {
 		if rt.Type == config.TypeCustom {
 			continue
 		}
-		check, err := qualityStrategy(rt)
+		check, err := qualityStrategy(rt, sonarExtra)
 		if err != nil {
 			return nil, err
 		}

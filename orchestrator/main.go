@@ -98,6 +98,20 @@ func (o *Orchestrator) CheckQuality(
 	// para a pipeline nova e a original trava em "running" para sempre.
 	// +optional
 	gitlabRef string,
+	// IID da merge request (ex: CI_MERGE_REQUEST_IID). Junto com as duas branches seguintes,
+	// transforma a análise em análise de Pull Request: o código novo passa a ser o diff contra a
+	// base, em vez do período de new code do projeto, e o SonarQube decora a MR no GitLab.
+	//
+	// Os três são necessários. Faltando qualquer um, roda análise de branch -- que é o certo fora
+	// de uma MR, e é o que acontece no job de develop.
+	// +optional
+	mergeRequestId string,
+	// Branch de origem da merge request (ex: CI_MERGE_REQUEST_SOURCE_BRANCH_NAME).
+	// +optional
+	mergeRequestSourceBranch string,
+	// Branch de destino da merge request (ex: CI_MERGE_REQUEST_TARGET_BRANCH_NAME).
+	// +optional
+	mergeRequestTargetBranch string,
 ) error {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -106,7 +120,14 @@ func (o *Orchestrator) CheckQuality(
 	if err := errCustomTargets(cfg, "check-quality"); err != nil {
 		return err
 	}
-	targets, err := qualityTargets(cfg)
+	sonarExtra := pullRequestOptions(mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
+	if sonarExtra == nil {
+		fmt.Println("ℹ️  Sem parâmetros de merge request: rodando análise de branch (sem decoração na MR).")
+	} else {
+		fmt.Printf("🔀 Análise de Pull Request !%s (%s → %s)\n",
+			mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
+	}
+	targets, err := qualityTargets(cfg, sonarExtra)
 	if err != nil {
 		return err
 	}
