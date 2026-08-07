@@ -209,6 +209,10 @@ func (o *Orchestrator) PublishAll(
 		return "", err
 	}
 
+	// O relatório vem antes do bump: o bump reescreve os arquivos de versão e empurra um commit
+	// novo, e é o commitSha de entrada que localiza a MR de origem.
+	reportPublishedImages(glClient, commitSha, result.Published, version)
+
 	// Commit e push das versões bumpadas de volta ao repositório. A supressão do
 	// pipeline vem do push option `-o ci.skip` dentro do orchestrator-utils, e
 	// não de um prefixo "[skip ci]" na mensagem.
