@@ -46,7 +46,7 @@ func reportPublishedImages(client *gitlabci.Client, commitSha, published, versio
 
 	body := publishedImagesComment(published, version)
 	for _, iid := range iids {
-		if err := client.UpsertMergeRequestNote(iid, body); err != nil {
+		if err := client.UpsertMergeRequestNote(iid, gitlabci.PublishedImagesMarker, body); err != nil {
 			fmt.Printf("⚠️  [Relatório] falha ao comentar na MR !%d: %v\n", iid, err)
 			continue
 		}
