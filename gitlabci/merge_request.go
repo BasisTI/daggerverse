@@ -8,11 +8,18 @@ import (
 	"strings"
 )
 
-// NoteMarker é o comentário HTML invisível que identifica uma nota escrita por nós.
+// Marcadores das notas escritas por nós: comentários HTML invisíveis que identificam a nota.
 //
-// É o que permite EDITAR a nota existente em vez de empilhar uma nova a cada execução, do mesmo
-// jeito que o SonarQube faz: reexecutar o job de publish atualiza o mesmo comentário.
-const NoteMarker = "<!-- daggerverse:published-images -->"
+// São o que permite EDITAR a nota existente em vez de empilhar uma nova a cada execução, do mesmo
+// jeito que o SonarQube faz: reexecutar o job atualiza o mesmo comentário.
+//
+// Um marcador por ASSUNTO. Uma MR recebe notas de origens diferentes -- as imagens publicadas no
+// merge, o relatório de qualidade a cada push -- e elas convivem: com marcador único a segunda
+// sobrescreveria a primeira.
+const (
+	PublishedImagesMarker = "<!-- daggerverse:published-images -->"
+	QualityReportMarker   = "<!-- daggerverse:quality-report -->"
+)
 
 // MergeRequestsForCommit lista os IIDs das merge requests associadas a um commit.
 //
@@ -43,12 +50,12 @@ func (c *Client) MergeRequestsForCommit(sha string) ([]int, error) {
 
 // UpsertMergeRequestNote publica um comentário na MR, ou atualiza o que já escrevemos antes.
 //
-// O corpo recebe o NoteMarker prefixado; é por ele que a nota anterior é reconhecida numa
-// reexecução. Sem isso, cada rerun do job deixaria mais um comentário na MR.
-func (c *Client) UpsertMergeRequestNote(iid int, body string) error {
-	body = NoteMarker + "\n" + body
+// O corpo recebe o marker prefixado; é por ele que a nota anterior é reconhecida numa reexecução.
+// Sem isso, cada rerun do job deixaria mais um comentário na MR.
+func (c *Client) UpsertMergeRequestNote(iid int, marker, body string) error {
+	body = marker + "\n" + body
 
-	noteID, err := c.findNote(iid)
+	noteID, err := c.findNote(iid, marker)
 	if err != nil {
 		return err
 	}
@@ -66,8 +73,8 @@ func (c *Client) UpsertMergeRequestNote(iid int, body string) error {
 	return c.doJSON(method, endpoint+"?"+params.Encode(), nil)
 }
 
-// findNote devolve o ID da nota marcada com NoteMarker, ou 0 se ainda não existe.
-func (c *Client) findNote(iid int) (int, error) {
+// findNote devolve o ID da nota marcada com marker, ou 0 se ainda não existe.
+func (c *Client) findNote(iid int, marker string) (int, error) {
 	endpoint := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests/%d/notes?per_page=100",
 		c.BaseURL, url.PathEscape(c.ProjectID), iid)
 
@@ -80,7 +87,7 @@ func (c *Client) findNote(iid int) (int, error) {
 	}
 
 	for _, n := range notes {
-		if strings.Contains(n.Body, NoteMarker) {
+		if strings.Contains(n.Body, marker) {
 			return n.ID, nil
 		}
 	}
