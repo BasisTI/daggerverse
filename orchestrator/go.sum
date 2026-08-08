@@ -6,6 +6,8 @@ github.com/BasisTI/daggerverse/gitlabci v0.3.0 h1:NYU/9fZx8Y8js0dQJtBfzbKPr8J8mB
 github.com/BasisTI/daggerverse/gitlabci v0.3.0/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
 github.com/BasisTI/daggerverse/gitlabci v0.4.0 h1:LwIVWNkONG9XhF7QcjYYkjkyGUuyfkWbDlMpQZIqPI8=
 github.com/BasisTI/daggerverse/gitlabci v0.4.0/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
+github.com/BasisTI/daggerverse/gitlabci v0.5.0 h1:pIdG/Zq1PHJfqXO6Md9bCqBHhCaI7LSGvo5ry636O0k=
+github.com/BasisTI/daggerverse/gitlabci v0.5.0/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
 github.com/BasisTI/daggerverse/pipeline v0.9.4 h1:JGPhqsEER0JBlTTeDc1LX6pIqcvj+UWEYc+LUPLRm7U=
 github.com/BasisTI/daggerverse/pipeline v0.9.4/go.mod h1:bbRCZY7WSP2vz0fTHTS+jplfiVYIQENiLQWqeGnf4WU=
 github.com/Khan/genqlient v0.8.1 h1:wtOCc8N9rNynRLXN3k3CnfzheCUNKBcvXmVv5zt6WCs=
