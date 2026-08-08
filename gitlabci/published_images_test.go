@@ -1,4 +1,4 @@
-package main
+package gitlabci
 
 import (
 	"strings"
@@ -7,7 +7,7 @@ import (
 
 func TestPublishedImagesComment(t *testing.T) {
 	published := "reg/grupo/snf:2026.08.07.5\nreg/grupo/frontend:2026.08.07.5\n"
-	got := publishedImagesComment(published, "2026.08.07.5")
+	got := PublishedImagesComment(published, "2026.08.07.5")
 
 	for _, want := range []string{
 		"reg/grupo/snf:2026.08.07.5",
