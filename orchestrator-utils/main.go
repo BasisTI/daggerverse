@@ -21,6 +21,12 @@ import (
 // OrchestratorUtils fornece utilitários Git para pipelines de CI/CD.
 type OrchestratorUtils struct{}
 
+// RepoRoot é o path que significa "o projeto é a raiz do repositório".
+//
+// Espelha pipeline.RepoRoot; é uma constante e não um import porque este módulo Dagger não
+// depende da lib pipeline.
+const RepoRoot = "."
+
 // GetChangedProjects retorna os nomes dos projetos que tiveram mudanças
 // comparando a branch atual com a branch base.
 //
@@ -49,20 +55,34 @@ func (u *OrchestratorUtils) GetChangedProjects(
 		return nil, err
 	}
 
+	return matchChangedProjects(strings.Split(strings.TrimSpace(output), "\n"), projectPaths), nil
+}
+
+// matchChangedProjects casa os arquivos alterados contra os paths dos projetos.
+//
+// RepoRoot (".") casa qualquer arquivo: é o path de um projeto que ocupa a raiz do repositório,
+// como um app Maven de módulo único. O prefixo literal não serviria -- `git diff --name-only`
+// devolve `pom.xml`, e não `./pom.xml`, de modo que um target na raiz nunca seria detectado e a
+// pipeline terminaria com "nenhuma mudança detectada" a cada commit.
+func matchChangedProjects(files []string, projectPaths map[string]string) []string {
 	affected := make(map[string]bool)
-	for _, file := range strings.Split(strings.TrimSpace(output), "\n") {
+	for _, file := range files {
+		if file == "" {
+			continue
+		}
 		for name, path := range projectPaths {
-			if strings.HasPrefix(file, path) {
+			if path == RepoRoot || path == "" || strings.HasPrefix(file, path) {
 				affected[name] = true
 			}
 		}
 	}
 
-	var list []string
+	list := make([]string, 0, len(affected))
 	for k := range affected {
 		list = append(list, k)
 	}
-	return list, nil
+	slices.Sort(list)
+	return list
 }
 
 // GetLastCommitSha retorna o SHA do último commit que alterou o path especificado,
