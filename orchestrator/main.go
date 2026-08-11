@@ -261,6 +261,9 @@ func (o *Orchestrator) CheckImages(
 // Promote promove as imagens derivadas da configuração de staging para produção.
 //
 // Assim como CheckImages, inclui as imagens de targets custom.
+//
+// Retorna as refs promovidas, uma por linha, e -- quando a configuração do GitLab é informada --
+// comenta na MR de origem do commit o que entrou em produção.
 func (o *Orchestrator) Promote(
 	ctx context.Context,
 	// Registry de origem (staging).
@@ -276,16 +279,58 @@ func (o *Orchestrator) Promote(
 	// +optional
 	// +default="origin/develop"
 	buildBranch string,
-) error {
-	imagesJson, err := o.projectImagesJson(ctx)
+	// Digest do commit atual (ex: CI_COMMIT_SHA). É por ele que a MR de develop→main é
+	// localizada para receber o relatório -- o job roda depois do merge, sem CI_MERGE_REQUEST_IID
+	// no ambiente. Se vazio, nada é comentado.
+	// +optional
+	commitSha string,
+	// URL base do GitLab (ex: CI_SERVER_URL). Se vazio, o relatório não é publicado.
+	// +optional
+	gitlabHost string,
+	// Token com scope `api` para autenticação no GitLab.
+	// +optional
+	gitlabToken *dagger.Secret,
+	// ID numérico do projeto no GitLab (ex: CI_PROJECT_ID).
+	// +optional
+	gitlabProjectId string,
+) (string, error) {
+	cfg, err := o.loadConfig(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return dag.OrchestratorUtils().Promote(ctx, o.Source, imagesJson, srcRegistry, registryUser, registryPassword,
+	imagesJson, err := cfg.ProjectImagesJSON()
+	if err != nil {
+		return "", err
+	}
+	glClient, err := newGitLabClient(ctx, gitlabHost, gitlabToken, gitlabProjectId, "")
+	if err != nil {
+		return "", err
+	}
+
+	promoted, err := dag.OrchestratorUtils().Promote(ctx, o.Source, imagesJson, srcRegistry, registryUser, registryPassword,
 		dagger.OrchestratorUtilsPromoteOpts{
 			DstRegistry: dstRegistry,
 			BuildBranch: buildBranch,
 		})
+	if err != nil {
+		return "", err
+	}
+
+	// As que não foram copiadas já estavam em produção: promote percorre TODAS as imagens do
+	// projeto e só falha ou copia, então a subtração cobre o resto sem um segundo canal de retorno.
+	unchanged := len(cfg.ProjectImages()) - countRefs(promoted)
+	glClient.ReportPromotedImages(commitSha, promoted, unchanged)
+
+	return promoted, nil
+}
+
+// countRefs conta as refs devolvidas por Promote, uma por linha.
+func countRefs(promoted string) int {
+	promoted = strings.TrimSpace(promoted)
+	if promoted == "" {
+		return 0
+	}
+	return len(strings.Split(promoted, "\n"))
 }
 
 // projectImagesJson devolve o mapa imagem->path derivado da configuração, no

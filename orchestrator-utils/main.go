@@ -640,6 +640,10 @@ func (u *OrchestratorUtils) NewGitLabConfig(
 // relendo a versão original do label OCI e fazendo crane copy com tag production-{version}.
 //
 // projectImagesJson mapeia "caminho_imagem_no_registry" -> "path_no_repo".
+//
+// Devolve as refs de destino que foram efetivamente copiadas, uma por linha. As imagens que já
+// estavam em produção ficam de fora: quem chama usa essa lista para relatar o que entrou nesta
+// promoção, e o total de imagens do projeto ele já conhece pela própria configuração.
 func (u *OrchestratorUtils) Promote(
 	ctx context.Context,
 	// Diretório raiz do repositório Git.
@@ -659,14 +663,14 @@ func (u *OrchestratorUtils) Promote(
 	// Se vazio, busca a partir de HEAD.
 	// +optional
 	buildBranch string,
-) error {
+) (string, error) {
 	if dstRegistry == "" {
 		dstRegistry = srcRegistry
 	}
 
 	projectImages, err := parseProjectImages(projectImagesJson)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug").
@@ -683,11 +687,12 @@ func (u *OrchestratorUtils) Promote(
 			fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", dstRegistry, registryUser)})
 	}
 
+	var promoted strings.Builder
 	for _, imagePath := range sortedKeys(projectImages) {
 		repoPaths := projectImages[imagePath]
 		lastSha, err := u.GetLastCommitSha(ctx, source, repoPaths, buildBranch)
 		if err != nil {
-			return fmt.Errorf("failed to get last commit SHA for %v: %w", repoPaths, err)
+			return "", fmt.Errorf("failed to get last commit SHA for %v: %w", repoPaths, err)
 		}
 
 		srcImageRef := fmt.Sprintf("%s/%s:sha-%s", srcRegistry, imagePath, lastSha)
@@ -702,10 +707,10 @@ func (u *OrchestratorUtils) Promote(
 		// produção na versão anterior sem nenhum sinal.
 		originalVersion, err := dag.Container().From(srcImageRef).Label(ctx, "org.opencontainers.image.version")
 		if err != nil {
-			return fmt.Errorf("falha ao ler o label de versão de %s: %w — a imagem existe? verifique a pipeline de develop", srcImageRef, err)
+			return "", fmt.Errorf("falha ao ler o label de versão de %s: %w — a imagem existe? verifique a pipeline de develop", srcImageRef, err)
 		}
 		if originalVersion == "" {
-			return fmt.Errorf("%s não tem o label org.opencontainers.image.version — a imagem não foi construída pelo pipeline padrão", srcImageRef)
+			return "", fmt.Errorf("%s não tem o label org.opencontainers.image.version — a imagem não foi construída pelo pipeline padrão", srcImageRef)
 		}
 
 		dstImageRef := fmt.Sprintf("%s/%s:production-%s", dstRegistry, imagePath, originalVersion)
@@ -724,10 +729,12 @@ func (u *OrchestratorUtils) Promote(
 
 		_, err = crane.WithExec([]string{"crane", "copy", srcImageRef, dstImageRef}).Sync(ctx)
 		if err != nil {
-			return fmt.Errorf("falha na promoção de %s: %w", imagePath, err)
+			return "", fmt.Errorf("falha na promoção de %s: %w", imagePath, err)
 		}
+
+		promoted.WriteString(dstImageRef + "\n")
 	}
-	return nil
+	return promoted.String(), nil
 }
 
 // imageDigest devolve o digest da tag, ou "" quando ela não existe ou não pôde

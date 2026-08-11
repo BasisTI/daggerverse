@@ -73,6 +73,62 @@ func TestImageResolutionUsesAllTriggerPaths(t *testing.T) {
 	}
 }
 
+// TestPromoteReturnsPromotedRefs trava o contrato usado pelo relatório na MR: o
+// que Promote devolve é a lista das refs de DESTINO copiadas. Devolver a ref de
+// origem (`sha-...`) ou o nome da imagem faria o comentário mostrar algo que não
+// é a tag que está em produção.
+func TestPromoteReturnsPromotedRefs(t *testing.T) {
+	promote := parseFunc(t, "Promote")
+
+	results := promote.Type.Results
+	if results == nil || len(results.List) != 2 {
+		t.Fatalf("Promote deveria devolver (string, error), devolve %d resultado(s)", numResults(results))
+	}
+	if name, ok := results.List[0].Type.(*ast.Ident); !ok || name.Name != "string" {
+		t.Errorf("o primeiro resultado de Promote deveria ser string")
+	}
+
+	if !accumulatesIdent(promote.Body, "dstImageRef") {
+		t.Error("Promote deveria acumular dstImageRef na lista devolvida")
+	}
+}
+
+func numResults(results *ast.FieldList) int {
+	if results == nil {
+		return 0
+	}
+	return len(results.List)
+}
+
+// accumulatesIdent procura uma chamada `.WriteString(...)` que mencione o
+// identificador, direta ou concatenado.
+func accumulatesIdent(body *ast.BlockStmt, ident string) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "WriteString" {
+			return true
+		}
+		for _, arg := range call.Args {
+			ast.Inspect(arg, func(inner ast.Node) bool {
+				if name, ok := inner.(*ast.Ident); ok && name.Name == ident {
+					found = true
+				}
+				return !found
+			})
+		}
+		return !found
+	})
+	return found
+}
+
 // versionLabelErrorBranch devolve o `if` que trata o erro da leitura do label,
 // identificado por ser o primeiro `if` após a chamada a Label.
 func versionLabelErrorBranch(body *ast.BlockStmt) *ast.IfStmt {
