@@ -18,6 +18,7 @@ import (
 // sobrescreveria a primeira.
 const (
 	PublishedImagesMarker = "<!-- daggerverse:published-images -->"
+	PromotedImagesMarker  = "<!-- daggerverse:promoted-images -->"
 	QualityReportMarker   = "<!-- daggerverse:quality-report -->"
 )
 
