@@ -238,13 +238,19 @@ func TestDerivedImagesMatchTargets(t *testing.T) {
 			}
 			for _, rt := range cfg.ResolveAll() {
 				key := cfg.Project.Group + "/" + rt.Image
-				path, ok := images[key]
+				paths, ok := images[key]
 				if !ok {
 					t.Errorf("imagem %q ausente no mapa derivado", key)
 					continue
 				}
-				if path != rt.Path {
-					t.Errorf("imagem %q -> %q, esperado %q", key, path, rt.Path)
+				// O path primário vem primeiro, e os extra-trigger-paths vêm
+				// junto: quem resolve a imagem no registry precisa enxergar
+				// todo commit capaz de reconstruí-la.
+				if len(paths) == 0 || paths[0] != rt.Path {
+					t.Errorf("imagem %q -> %v, esperado começar por %q", key, paths, rt.Path)
+				}
+				if want := cfg.TriggerPaths(rt.Name); !reflect.DeepEqual(paths, want) {
+					t.Errorf("imagem %q -> %v, esperado %v", key, paths, want)
 				}
 			}
 
@@ -259,9 +265,10 @@ func TestDerivedImagesMatchTargets(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Resolve(%s): %v", name, err)
 				}
-				if bt.SourcePath(name) != images[cfg.Project.Group+"/"+rt.Image] {
-					t.Errorf("%s: path do build %q difere do path da imagem %q",
-						name, bt.SourcePath(name), images[cfg.Project.Group+"/"+rt.Image])
+				derived := images[cfg.Project.Group+"/"+rt.Image]
+				if len(derived) == 0 || bt.SourcePath(name) != derived[0] {
+					t.Errorf("%s: path do build %q difere do path da imagem %v",
+						name, bt.SourcePath(name), derived)
 				}
 			}
 		})

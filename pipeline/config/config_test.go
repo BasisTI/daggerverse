@@ -29,65 +29,69 @@ func TestFixturesProjectImages(t *testing.T) {
 	tests := []struct {
 		fixture string
 		group   string
-		images  map[string]string
+		images  map[string][]string
 	}{
 		{
 			fixture: "contavinculada",
 			group:   "contavinculada",
-			images: map[string]string{
-				"contavinculada/contavinculada": "contavinculada",
-				"contavinculada/integracaosgo":  "integracaosgo",
-				"contavinculada/snf":            "snf",
-				"contavinculada/frontend":       "frontend",
+			images: map[string][]string{
+				"contavinculada/contavinculada": {"contavinculada"},
+				"contavinculada/integracaosgo":  {"integracaosgo"},
+				"contavinculada/snf":            {"snf"},
+				"contavinculada/frontend":       {"frontend"},
 			},
 		},
 		{
 			fixture: "licitacao",
 			group:   "licitacao",
-			images: map[string]string{
-				"licitacao/licitacao":           "licitacao",
-				"licitacao/integracao":          "integracao",
-				"licitacao/frontend":            "frontend",
-				"licitacao/processos_judiciais": "scrapers/processos_judiciais",
-				"licitacao/painel_licitacoes":   "painel_licitacoes",
-				"licitacao/carga_editais":       "carga_editais",
-				"licitacao/comprasnet_nodriver": "scrapers/comprasnet_nodriver",
-				"licitacao/mte":                 "scrapers/mte",
-				"licitacao/cct_mte":             "scrapers/cct_mte",
+			images: map[string][]string{
+				"licitacao/licitacao":           {"licitacao"},
+				"licitacao/integracao":          {"integracao"},
+				"licitacao/frontend":            {"frontend"},
+				"licitacao/processos_judiciais": {"scrapers/processos_judiciais"},
+				"licitacao/painel_licitacoes":   {"painel_licitacoes"},
+				"licitacao/carga_editais":       {"carga_editais"},
+				"licitacao/comprasnet_nodriver": {"scrapers/comprasnet_nodriver"},
+				"licitacao/mte":                 {"scrapers/mte"},
+				"licitacao/cct_mte":             {"scrapers/cct_mte"},
 			},
 		},
 		{
 			fixture: "kaizenstat",
 			group:   "kaizenstat",
-			images: map[string]string{
-				"kaizenstat/judge-admin":          "apps/judge-admin",
-				"kaizenstat/judge-api":            "apps/judge-api",
-				"kaizenstat/judge-worker":         "apps/judge-worker",
-				"kaizenstat/judge-scheduler":      "apps/judge-scheduler",
-				"kaizenstat/judge-dashboard":      "apps/judge-dashboard",
-				"kaizenstat/hiring_salary_update": "scripts/hiring_salary_update",
-				"kaizenstat/hiring_vagas_update":  "scripts/hiring_vagas_update",
+			images: map[string][]string{
+				"kaizenstat/judge-admin":          {"apps/judge-admin"},
+				"kaizenstat/judge-api":            {"apps/judge-api"},
+				"kaizenstat/judge-worker":         {"apps/judge-worker"},
+				"kaizenstat/judge-scheduler":      {"apps/judge-scheduler"},
+				"kaizenstat/judge-dashboard":      {"apps/judge-dashboard"},
+				"kaizenstat/hiring_salary_update": {"scripts/hiring_salary_update"},
+				"kaizenstat/hiring_vagas_update":  {"scripts/hiring_vagas_update"},
 			},
 		},
 		{
 			// Targets custom NÃO são buildados pelo orchestrator genérico,
 			// mas continuam existindo no registry e portanto em ProjectImages.
+			//
+			// lightdash-content carrega o extra-trigger-path junto: é ele que faz
+			// check-images e promote acharem a imagem reconstruída por um commit
+			// no projeto dbt, e não a de um build anterior.
 			fixture: "colaboradados",
 			group:   "colaboradados",
-			images: map[string]string{
-				"colaboradados/beneficios":        "apps/beneficios",
-				"colaboradados/rh-dp":             "rh-dp",
-				"colaboradados/comercial":         "comercial",
-				"colaboradados/financeiro":        "financeiro",
-				"colaboradados/lightdash-content": "lightdash-content",
+			images: map[string][]string{
+				"colaboradados/beneficios":        {"apps/beneficios"},
+				"colaboradados/rh-dp":             {"rh-dp"},
+				"colaboradados/comercial":         {"comercial"},
+				"colaboradados/financeiro":        {"financeiro"},
+				"colaboradados/lightdash-content": {"lightdash-content", "rh-dp/dbtrh"},
 			},
 		},
 		{
 			fixture: "triagem",
 			group:   "triagem",
-			images: map[string]string{
-				"triagem/triagem-core":     "triagem-core",
-				"triagem/triagem-ingestao": "triagem-ingestao",
+			images: map[string][]string{
+				"triagem/triagem-core":     {"triagem-core", "triagem-contracts", "pom.xml"},
+				"triagem/triagem-ingestao": {"triagem-ingestao", "triagem-contracts", "pom.xml"},
 			},
 		},
 	}
@@ -120,13 +124,52 @@ func TestFixturesProjectImages(t *testing.T) {
 	}
 }
 
+// TestTriggerPaths cobre a regra que liga build e promoção: o conjunto de paths
+// que reconstrói a imagem tem que ser o mesmo que a resolve no registry.
+func TestTriggerPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		target  string
+		want    []string
+	}{
+		{
+			name:    "path primário vem primeiro, extras na ordem declarada",
+			fixture: "triagem",
+			target:  "triagem-core",
+			want:    []string{"triagem-core", "triagem-contracts", "pom.xml"},
+		},
+		{
+			name:    "target sem extras devolve só o path efetivo",
+			fixture: "colaboradados",
+			target:  "beneficios",
+			want:    []string{"apps/beneficios"},
+		},
+		{
+			name:    "extra que repete o path primário não duplica",
+			fixture: "colaboradados",
+			target:  "lightdash-content",
+			want:    []string{"lightdash-content", "rh-dp/dbtrh"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadFixture(t, tt.fixture)
+			if got := cfg.TriggerPaths(tt.target); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("TriggerPaths(%q) = %v, quer %v", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectImagesJSON(t *testing.T) {
 	cfg := loadFixture(t, "triagem")
 	raw, err := cfg.ProjectImagesJSON()
 	if err != nil {
 		t.Fatalf("ProjectImagesJSON: %v", err)
 	}
-	var got map[string]string
+	var got map[string][]string
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		t.Fatalf("json inválido %q: %v", raw, err)
 	}

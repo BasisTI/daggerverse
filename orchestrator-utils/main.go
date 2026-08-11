@@ -85,14 +85,21 @@ func matchChangedProjects(files []string, projectPaths map[string]string) []stri
 	return list
 }
 
-// GetLastCommitSha retorna o SHA do último commit que alterou o path especificado,
-// ignorando commits automáticos de CI e commits de bump de versão.
+// GetLastCommitSha retorna o SHA do último commit que alterou QUALQUER um dos
+// paths especificados, ignorando commits automáticos de CI e commits de bump de
+// versão.
+//
+// Recebe uma lista, e não um path só, porque um target pode ser reconstruído por
+// commits que não tocam o próprio diretório: são os extra-trigger-paths. Resolver
+// a imagem por um subconjunto dos paths que a constroem faz o `sha-` apontar para
+// um build anterior — foi assim que o lightdash-content foi promovido com uma
+// versão defasada.
 func (u *OrchestratorUtils) GetLastCommitSha(
 	ctx context.Context,
 	// Diretório raiz do repositório Git.
 	source *dagger.Directory,
-	// Path do projeto no repositório.
-	path string,
+	// Paths do projeto no repositório (path efetivo + extra-trigger-paths).
+	paths []string,
 	// Ref Git a partir da qual buscar (ex: "origin/develop"). Se vazio, usa HEAD.
 	// +optional
 	ref string,
@@ -105,7 +112,8 @@ func (u *OrchestratorUtils) GetLastCommitSha(
 		args = append(args, ref)
 	}
 
-	args = append(args, "--", path)
+	args = append(args, "--")
+	args = append(args, paths...)
 
 	out, err := dag.Container().From("alpine/git").
 		WithWorkdir("/src").WithDirectory("/src", source).
@@ -187,9 +195,9 @@ func (u *OrchestratorUtils) CheckImages(
 	// +optional
 	buildBranch string,
 ) error {
-	var projectImages map[string]string
-	if err := json.Unmarshal([]byte(projectImagesJson), &projectImages); err != nil {
-		return fmt.Errorf("failed to parse projectImagesJson: %w", err)
+	projectImages, err := parseProjectImages(projectImagesJson)
+	if err != nil {
+		return err
 	}
 
 	crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug")
@@ -201,17 +209,17 @@ func (u *OrchestratorUtils) CheckImages(
 	}
 
 	var missing []string
-	for imagePath, repoPath := range projectImages {
-		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath, buildBranch)
+	for _, imagePath := range sortedKeys(projectImages) {
+		repoPaths := projectImages[imagePath]
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPaths, buildBranch)
 		if err != nil {
-			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
+			return fmt.Errorf("failed to get last commit SHA for %v: %w", repoPaths, err)
 		}
 
 		tag := fmt.Sprintf("%s/%s:sha-%s", registry, imagePath, lastSha)
 		fmt.Printf("🔎 Verificando existência: %s\n", tag)
 
-		_, err = crane.WithExec([]string{"crane", "manifest", tag}).Sync(ctx)
-		if err != nil {
+		if !waitForImage(ctx, crane, tag, waitTimeout) {
 			fmt.Printf("❌ Faltante: %s\n", tag)
 			missing = append(missing, imagePath)
 		}
@@ -223,9 +231,73 @@ func (u *OrchestratorUtils) CheckImages(
 	return nil
 }
 
+// waitTimeout é quanto tempo o check-images espera uma imagem aparecer antes de
+// considerá-la faltante.
+//
+// A pipeline de merge request de develop→main dispara junto com a pipeline de
+// build de develop — na prática com segundos de diferença — então conferir o
+// registry imediatamente reprova imagens que ainda estão sendo construídas. Isso
+// já produziu vermelho em MR cujo build terminou logo depois.
+const waitTimeout = 10 * time.Minute
+
+// waitForImage devolve true assim que a tag existir, ou false se o tempo acabar.
+func waitForImage(ctx context.Context, crane *dagger.Container, tag string, timeout time.Duration) bool {
+	const interval = 20 * time.Second
+
+	deadline := time.Now().Add(timeout)
+	for attempt := 1; ; attempt++ {
+		// O cache buster é obrigatório: sem ele o Dagger reaproveita o resultado do
+		// `crane manifest` anterior e a espera nunca observaria a imagem aparecer.
+		_, err := crane.
+			WithEnvVariable("CACHE_BUSTER", time.Now().Format(time.RFC3339Nano)).
+			WithExec([]string{"crane", "manifest", tag}).Sync(ctx)
+		if err == nil {
+			return true
+		}
+		if time.Now().Add(interval).After(deadline) {
+			return false
+		}
+		if attempt == 1 {
+			fmt.Printf("⏳ Ainda não publicada, aguardando até %s: %s\n", timeout, tag)
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(interval):
+		}
+	}
+}
+
+// parseProjectImages lê o mapa imagem -> paths de trigger.
+func parseProjectImages(projectImagesJson string) (map[string][]string, error) {
+	var images map[string][]string
+	if err := json.Unmarshal([]byte(projectImagesJson), &images); err != nil {
+		return nil, fmt.Errorf("failed to parse projectImagesJson: %w", err)
+	}
+	return images, nil
+}
+
+// sortedKeys dá ordem estável ao log: iterar o mapa direto embaralha as imagens
+// a cada execução e atrapalha comparar dois jobs.
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // CommitAndPush commits specified files and pushes to a remote branch.
-// The push uses ci.skip to avoid triggering a branch pipeline while still
-// allowing merge request pipelines for the same commit.
+//
+// O push usa ci.skip para não disparar uma pipeline de branch pelo commit de
+// bump, que só mexe em arquivo de versão.
+//
+// Atenção ao alcance disso: o ci.skip suprime TODA pipeline daquele push,
+// inclusive a de merge request. Quando existe uma MR aberta de develop→main, o
+// commit de bump vira o head da MR e não roda job nenhum — a pipeline aparece
+// como `skipped`, o que não bloqueia o merge. É por isso que o check-images
+// também roda na pipeline de main, antes do promote.
 func (u *OrchestratorUtils) CommitAndPush(
 	ctx context.Context,
 	// Diretório raiz do repositório Git com as alterações.
@@ -592,9 +664,9 @@ func (u *OrchestratorUtils) Promote(
 		dstRegistry = srcRegistry
 	}
 
-	var projectImages map[string]string
-	if err := json.Unmarshal([]byte(projectImagesJson), &projectImages); err != nil {
-		return fmt.Errorf("failed to parse projectImagesJson: %w", err)
+	projectImages, err := parseProjectImages(projectImagesJson)
+	if err != nil {
+		return err
 	}
 
 	crane := dag.Container().From("gcr.io/go-containerregistry/crane:debug").
@@ -611,21 +683,29 @@ func (u *OrchestratorUtils) Promote(
 			fmt.Sprintf("crane auth login %s -u %s -p \"$REGISTRY_PASS\"", dstRegistry, registryUser)})
 	}
 
-	for imagePath, repoPath := range projectImages {
-		lastSha, err := u.GetLastCommitSha(ctx, source, repoPath, buildBranch)
+	for _, imagePath := range sortedKeys(projectImages) {
+		repoPaths := projectImages[imagePath]
+		lastSha, err := u.GetLastCommitSha(ctx, source, repoPaths, buildBranch)
 		if err != nil {
-			return fmt.Errorf("failed to get last commit SHA for %s: %w", repoPath, err)
+			return fmt.Errorf("failed to get last commit SHA for %v: %w", repoPaths, err)
 		}
 
 		srcImageRef := fmt.Sprintf("%s/%s:sha-%s", srcRegistry, imagePath, lastSha)
 
 		fmt.Printf("🔍 Inspecionando imagem: %s\n", srcImageRef)
 
-		// Lê label de versão da imagem
+		// Lê label de versão da imagem.
+		//
+		// Um erro aqui é fatal de propósito. Antes a promoção seguia em frente, e o
+		// job terminava verde sem ter promovido nada: uma imagem faltante ficava
+		// indistinguível de uma promoção bem-sucedida, e o serviço permanecia em
+		// produção na versão anterior sem nenhum sinal.
 		originalVersion, err := dag.Container().From(srcImageRef).Label(ctx, "org.opencontainers.image.version")
-		if err != nil || originalVersion == "" {
-			fmt.Printf("⚠️  Skipping %s: Label de versão não encontrado\n", imagePath)
-			continue
+		if err != nil {
+			return fmt.Errorf("falha ao ler o label de versão de %s: %w — a imagem existe? verifique a pipeline de develop", srcImageRef, err)
+		}
+		if originalVersion == "" {
+			return fmt.Errorf("%s não tem o label org.opencontainers.image.version — a imagem não foi construída pelo pipeline padrão", srcImageRef)
 		}
 
 		dstImageRef := fmt.Sprintf("%s/%s:production-%s", dstRegistry, imagePath, originalVersion)

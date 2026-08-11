@@ -380,7 +380,7 @@ func renderReport(cfg *config.Config, configPath string) string {
 	sort.Strings(refs)
 	fmt.Fprintf(&sb, "\nImagens derivadas (%d) — usadas por check-images e promote:\n", len(refs))
 	for _, image := range refs {
-		fmt.Fprintf(&sb, "  %s -> %s\n", image, images[image])
+		fmt.Fprintf(&sb, "  %s -> %s\n", image, strings.Join(images[image], ", "))
 	}
 
 	if warnings := configWarnings(cfg); len(warnings) > 0 {
