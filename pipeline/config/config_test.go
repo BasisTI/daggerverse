@@ -293,6 +293,7 @@ func TestResolveAndVersionFilePath(t *testing.T) {
 		RootVersionFile:   true,
 		ExtraTriggerPaths: []string{"triagem-contracts", "pom.xml"},
 		Sonar:             true,
+		SonarProjectKey:   "triagem-ingestao",
 		MavenImage:        "maven:3.9.11-eclipse-temurin-25",
 		UseDocker:         true,
 		Reactor:           true,
@@ -546,6 +547,51 @@ sonar = true
 			wantErr: `sonar = true em type = "dockerfile" exige quality-type`,
 		},
 		{
+			name: "sonar-project-key sem sonar",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+sonar-project-key = "x-a"
+`,
+			wantErr: "sonar-project-key só faz sentido com sonar = true",
+		},
+		{
+			name: "sonar-project-key duplicada",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+sonar = true
+sonar-project-key = "x-comum"
+[targets.b]
+type = "maven"
+sonar = true
+sonar-project-key = "x-comum"
+`,
+			wantErr: `sonar-project-key "x-comum" duplicada entre os targets "a" e "b"`,
+		},
+		{
+			name: "sonar-project-key colide com nome de target",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+sonar = true
+[targets.b]
+type = "maven"
+sonar = true
+sonar-project-key = "a"
+`,
+			wantErr: `sonar-project-key "a" duplicada entre os targets "a" e "b"`,
+		},
+		{
 			name: "campo desconhecido",
 			toml: `
 schema-version = 1
@@ -688,5 +734,58 @@ use-docker = false
 	}
 	if cfg.EffectiveUseDocker("b") {
 		t.Error("target com use-docker = false deveria sobrescrever o default")
+	}
+}
+
+// TestSonarProjectKey cobre o desacoplamento entre o nome do target e a chave
+// do projeto no SonarQube. A chave é o identificador permanente da análise no
+// servidor; o nome do target é escolha local do repositório.
+func TestSonarProjectKey(t *testing.T) {
+	cfg, err := Load([]byte(`
+schema-version = 1
+[project]
+group = "contavinculada"
+[targets.contavinculada]
+type = "maven"
+sonar = true
+[targets.frontend]
+type = "npm"
+sonar = true
+sonar-project-key = "contavinculada-frontend"
+[targets.scripts]
+type = "dockerfile"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Sem o campo, a chave continua sendo o nome do target: nenhum pipeline.toml
+	// existente muda de comportamento ao subir de versão.
+	if got, want := cfg.EffectiveSonarProjectKey("contavinculada"), "contavinculada"; got != want {
+		t.Errorf("EffectiveSonarProjectKey(contavinculada) = %q, quer %q", got, want)
+	}
+	if got, want := cfg.EffectiveSonarProjectKey("frontend"), "contavinculada-frontend"; got != want {
+		t.Errorf("EffectiveSonarProjectKey(frontend) = %q, quer %q", got, want)
+	}
+
+	// O ResolvedTarget é o que as estratégias consomem: a chave precisa chegar
+	// resolvida lá, não como campo cru.
+	rt, err := cfg.Resolve("frontend")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got, want := rt.SonarProjectKey, "contavinculada-frontend"; got != want {
+		t.Errorf("ResolvedTarget.SonarProjectKey = %q, quer %q", got, want)
+	}
+	// A chave não interfere no nome da imagem: são identificadores de sistemas
+	// diferentes e o default de ambos é o nome do target.
+	if got, want := rt.Image, "frontend"; got != want {
+		t.Errorf("ResolvedTarget.Image = %q, quer %q", got, want)
+	}
+
+	// SonarProjectKeys cobre exatamente os targets com sonar = true, na ordem
+	// alfabética dos targets — é a fonte do seeding dos projetos no servidor.
+	if got, want := cfg.SonarProjectKeys(), []string{"contavinculada", "contavinculada-frontend"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("SonarProjectKeys = %v, quer %v", got, want)
 	}
 }

@@ -33,6 +33,7 @@ var validQualityTypes = map[TargetType]bool{
 //   - todo target precisa de um type válido;
 //   - quality-type, quando presente, precisa ser maven, npm ou uv, e exige sonar = true;
 //   - sonar = true exige um tipo efetivo de quality com build system (ver EffectiveQualityType);
+//   - sonar-project-key exige sonar = true, e as chaves efetivas devem ser únicas;
 //   - reactor = true exige module não vazio;
 //   - os nomes de imagem efetivos devem ser únicos entre os targets.
 func (c *Config) Validate() error {
@@ -51,6 +52,7 @@ func (c *Config) Validate() error {
 	}
 
 	seenImages := make(map[string]string, len(c.Targets))
+	seenSonarKeys := make(map[string]string, len(c.Targets))
 	for _, name := range c.TargetNames() {
 		t := c.Targets[name]
 
@@ -85,6 +87,24 @@ func (c *Config) Validate() error {
 				"target %q: sonar = true em type = \"dockerfile\" exige quality-type — "+
 					"o Dockerfile diz como a imagem é construída, não com que build system o código é "+
 					"analisado; declare quality-type = \"maven\" | \"npm\" | \"uv\"", name))
+		}
+
+		if strings.TrimSpace(t.SonarProjectKey) != "" && !t.Sonar {
+			errs = append(errs, fmt.Sprintf(
+				"target %q: sonar-project-key só faz sentido com sonar = true — "+
+					"remova o campo ou ligue o sonar", name))
+		}
+
+		// A chave é o identificador do projeto no servidor: duas iguais fariam
+		// dois targets escreverem a mesma análise, um sobrescrevendo o outro.
+		if t.Sonar {
+			key := c.EffectiveSonarProjectKey(name)
+			if prev, dup := seenSonarKeys[key]; dup {
+				errs = append(errs, fmt.Sprintf(
+					"sonar-project-key %q duplicada entre os targets %q e %q", key, prev, name))
+			} else {
+				seenSonarKeys[key] = name
+			}
 		}
 
 		if t.Reactor && strings.TrimSpace(t.Module) == "" {

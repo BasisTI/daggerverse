@@ -113,6 +113,12 @@ type Target struct {
 	ExtraTriggerPaths []string `toml:"extra-trigger-paths"`
 	// Sonar indica que o target participa do CheckQuality.
 	Sonar bool `toml:"sonar"`
+	// SonarProjectKey é a chave do projeto no SonarQube. Default: o nome do
+	// target. Existe porque a chave é o identificador permanente da análise no
+	// servidor -- renomeá-la órfã todo o histórico --, e o nome do target é
+	// escolhido pelo repositório, sem saber que num servidor compartilhado
+	// nomes como `frontend` ou `snf` colidem entre projetos.
+	SonarProjectKey string `toml:"sonar-project-key"`
 	// QualityType declara com que build system o CÓDIGO do target é analisado,
 	// independentemente de como sua IMAGEM é construída. Existe para o caso em
 	// que os dois divergem: uma imagem construída por Dockerfile próprio cujo
@@ -169,6 +175,8 @@ type ResolvedTarget struct {
 	RootVersionFile   bool
 	ExtraTriggerPaths []string
 	Sonar             bool
+	// SonarProjectKey só é significativo quando Sonar = true.
+	SonarProjectKey string
 
 	// MavenImage e UseDocker só são significativos para Type/QualityType == TypeMaven.
 	MavenImage         string
@@ -299,6 +307,26 @@ func (c *Config) EffectiveImage(name string) string {
 	return name
 }
 
+// EffectiveSonarProjectKey retorna a chave do projeto no SonarQube (default: o
+// nome do target). Só é significativa para targets com sonar = true.
+func (c *Config) EffectiveSonarProjectKey(name string) string {
+	if key := c.Targets[name].SonarProjectKey; key != "" {
+		return key
+	}
+	return name
+}
+
+// SonarProjectKeys retorna as chaves do SonarQube dos targets com sonar = true,
+// na ordem alfabética dos targets.
+func (c *Config) SonarProjectKeys() []string {
+	names := c.SonarTargetNames()
+	keys := make([]string, 0, len(names))
+	for _, name := range names {
+		keys = append(keys, c.EffectiveSonarProjectKey(name))
+	}
+	return keys
+}
+
 // EffectiveQualityType retorna o build system que analisa o código do target no
 // CheckQuality: o `quality-type` declarado ou, na ausência dele, o próprio
 // `type`. Targets custom devolvem TypeCustom e continuam sem quality no
@@ -413,6 +441,7 @@ func (c *Config) Resolve(name string) (ResolvedTarget, error) {
 		RootVersionFile:   t.RootVersionFile,
 		ExtraTriggerPaths: t.ExtraTriggerPaths,
 		Sonar:             t.Sonar,
+		SonarProjectKey:   c.EffectiveSonarProjectKey(name),
 		MavenImage:         c.EffectiveMavenImage(name),
 		UseDocker:          c.EffectiveUseDocker(name),
 		SonarPluginVersion: c.EffectiveSonarPluginVersion(name),

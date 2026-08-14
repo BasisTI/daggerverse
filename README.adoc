@@ -63,7 +63,7 @@ dagger call -m github.com/BasisTI/daggerverse/orchestrator@3.6.0 \
   validate
 ----
 
-=== The five functions
+=== The six functions
 
 ==== validate
 
@@ -71,13 +71,17 @@ Loads and validates the declarative file and returns a textual report with the r
 
 The warnings cover what is valid in the schema but the generic orchestrator cannot execute: `type = "custom"` targets.
 
+==== sonar-project-keys
+
+Prints the SonarQube project key of every target with `sonar = true`, one per line. Also makes no network calls. It is the input for provisioning the projects on the server before the first merge request — see <<sonar-project-key>>.
+
 ==== check-quality
 
 Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, and the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`.
 
 Nothing is published, but the build still carries the project's *real* version — the one declared in the version file, from the last publish. Forcing a constant there would pin SonarQube's `PREVIOUS_VERSION` new-code anchor to that constant, and the whole codebase would read as new code forever.
 
-When the merge request triple is present, the analysis becomes a *Pull Request analysis*: new code is the diff against the base branch instead of the project's new-code period, and SonarQube decorates the merge request in GitLab. All three are required — with any of them missing it falls back to branch analysis, which is the right thing outside a merge request and is what the develop job does.
+When the merge request triple is present, the analysis becomes a *Pull Request analysis*: new code is the diff against the base branch instead of the project's new-code period, and SonarQube decorates the merge request in GitLab. All three are required — with any of them missing it falls back to branch analysis, which is the right thing outside a merge request. The shared GitLab template only runs `check-quality` on merge requests, so in practice every analysis it produces is a Pull Request analysis.
 
 Fails with an explanatory message if the configuration has custom targets.
 
@@ -172,9 +176,32 @@ Implemented in `pipeline/config`. Parsing is *strict*: any unknown field is an e
 | `sonar` | bool
 | The target takes part in `check-quality`. On `type = "dockerfile"` targets it requires `quality-type`; on `custom` targets the check is up to the project's own Dagger module.
 
+| `sonar-project-key` | string
+| Project key in SonarQube. *Defaults to the target name.* Only accepted alongside `sonar = true`, and effective keys must be unique across targets. See <<sonar-project-key>>.
+
 | `quality-type` | string
 | The build system that analyses the target's *code*, when it differs from how the *image* is built. One of `maven`, `npm`, `uv` — never `dockerfile` or `custom`, which have no build system. Only accepted alongside `sonar = true`. *Defaults to `type` itself.* See <<quality-type>>.
 |===
+
+[[sonar-project-key]]
+==== `sonar-project-key`: the analysis identity, decoupled from the target name
+
+The key is the permanent identity of the project on the SonarQube server: renaming it orphans the
+entire analysis history. The target name, on the other hand, is a local choice of the repository —
+and on a shared server, names picked locally (`frontend`, `snf`, `ponto`) collide across projects.
+`sonar-project-key` is what lets a repository call its target `frontend` and still analyse under
+`contavinculada-frontend`.
+
+Omitting it keeps the key equal to the target name, so no existing `pipeline.toml` changes
+behaviour. It is orthogonal to `image`: the two identifiers name the same target in different
+systems, and both default to the target name.
+
+`orchestrator sonar-project-keys` lists the keys of the targets with `sonar = true`, one per line.
+It exists for provisioning: on an empty SonarQube the *first* analysis of a project is always a
+merge-request analysis, and the branch plugin validates the base branch **before** the server
+auto-provisions the project — the analysis dies with `No branch exists in Sonarqube with the name
+main` and the project is never created. The projects have to exist before the first merge request;
+this function is the source of that list so it is not duplicated outside `pipeline.toml`.
 
 [[quality-type]]
 ==== `quality-type`: analysing the code of a `dockerfile` target
