@@ -146,10 +146,11 @@ func checkMaven(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityS
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
 		m := dag.Maven(mavenOpts(rt))
-		// A chave do Sonar é o nome do target, que não coincide com o path quando
-		// eles divergem (target `beneficios` em `apps/beneficios`).
+		// A chave do Sonar vem do target resolvido, não do argumento `module`:
+		// aqui `module` é o path do módulo no reactor, e a chave é o
+		// identificador do projeto no servidor (default: o nome do target).
 		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, sonarExtra,
-			dagger.MavenNewSonarConfigOpts{ProjectKey: module})
+			dagger.MavenNewSonarConfigOpts{ProjectKey: rt.SonarProjectKey})
 		// Versão vazia: o check não publica nada e não reescreve o pom. A versão
 		// declarada nele -- a última publicada -- é a que o Sonar registra.
 		result := m.FullBuild(mavenSource(source), mavenModule(rt, module), "", "",
@@ -196,7 +197,7 @@ func checkNpm(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStr
 		opts := npmOpts(rt)
 		opts.ModulePath = moduleSubpath(sourcePath)
 		n := dag.Npm(source, opts)
-		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, module,
+		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, rt.SonarProjectKey,
 			dagger.NpmNewSonarConfigOpts{ExtraOptions: sonarExtra})
 		result := n.FullBuild(dagger.NpmFullBuildOpts{SonarConfig: sonarConfig})
 		_, err := result.ImageURL(ctx)
@@ -242,7 +243,7 @@ func checkUv(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStra
 		// Até ele virar path-aware como maven e npm, o subdiretório é recortado
 		// aqui -- ou seja, targets uv seguem sem .git e sem blame no Sonar.
 		u := dag.Uv(source.Directory(sourcePath), uvOpts(rt))
-		sonarConfig := u.NewSonarConfig(sonarHost, sonarToken, module,
+		sonarConfig := u.NewSonarConfig(sonarHost, sonarToken, rt.SonarProjectKey,
 			dagger.UvNewSonarConfigOpts{ExtraOptions: sonarExtra})
 		result := u.FullBuild(dagger.UvFullBuildOpts{SonarConfig: sonarConfig})
 		_, err := result.ImageURL(ctx)

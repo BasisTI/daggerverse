@@ -66,6 +66,23 @@ func (o *Orchestrator) Validate(ctx context.Context) (string, error) {
 	return renderReport(cfg, o.ConfigPath), nil
 }
 
+// SonarProjectKeys devolve, uma por linha, as chaves de projeto no SonarQube dos
+// targets com `sonar = true`.
+//
+// Existe para o provisionamento: num servidor SonarQube vazio, a primeira
+// análise de um projeto é sempre de merge request, e o plugin de branch valida a
+// branch base ANTES de o servidor auto-provisionar o projeto -- a análise morre
+// com "No branch exists in Sonarqube with the name main" e o projeto sequer é
+// criado. Os projetos precisam existir antes da primeira MR, e esta função é a
+// fonte da lista, para que ela não seja duplicada fora do pipeline.toml.
+func (o *Orchestrator) SonarProjectKeys(ctx context.Context) (string, error) {
+	cfg, err := o.loadConfig(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(cfg.SonarProjectKeys(), "\n"), nil
+}
+
 // CheckQuality roda testes e análise estática (Sonar) nos targets alterados que
 // declaram `sonar = true`.
 func (o *Orchestrator) CheckQuality(
@@ -402,6 +419,9 @@ func renderReport(cfg *config.Config, configPath string) string {
 		fmt.Fprintf(&sb, "    imagem:       %s\n", cfg.ImagePath(rt.Name))
 		fmt.Fprintf(&sb, "    version-file: %s\n", orDash(versionFilePath(rt)))
 		fmt.Fprintf(&sb, "    sonar:        %t\n", rt.Sonar)
+		if rt.Sonar {
+			fmt.Fprintf(&sb, "    sonar-key:    %s\n", rt.SonarProjectKey)
+		}
 		if rt.QualityType != rt.Type {
 			fmt.Fprintf(&sb, "    quality-type: %s\n", rt.QualityType)
 		}
