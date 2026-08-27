@@ -4,6 +4,8 @@ github.com/BasisTI/daggerverse/gitlabci v0.6.0 h1:VwMv7honpknEuAbFL2qJxiuHgH/ksC
 github.com/BasisTI/daggerverse/gitlabci v0.6.0/go.mod h1:D8DhdwxzLCY52Sg6G4iftpMgUqnaILAMX4kx4Xlulic=
 github.com/BasisTI/daggerverse/pipeline v0.11.0 h1:CebPFI3i08I/Vhtx7GxOrlu27ra1MYugDHAksJN2QCM=
 github.com/BasisTI/daggerverse/pipeline v0.11.0/go.mod h1:bbRCZY7WSP2vz0fTHTS+jplfiVYIQENiLQWqeGnf4WU=
+github.com/BasisTI/daggerverse/pipeline v0.12.0 h1:EEWd5/PlfcPUIKOPv+2pPiHUaablG/aL7ya40bsAnZw=
+github.com/BasisTI/daggerverse/pipeline v0.12.0/go.mod h1:bbRCZY7WSP2vz0fTHTS+jplfiVYIQENiLQWqeGnf4WU=
 github.com/Khan/genqlient v0.8.1 h1:wtOCc8N9rNynRLXN3k3CnfzheCUNKBcvXmVv5zt6WCs=
 github.com/Khan/genqlient v0.8.1/go.mod h1:R2G6DzjBvCbhjsEajfRjbWdVglSH/73kSivC9TLWVjU=
 github.com/agnivade/levenshtein v1.2.1 h1:EHBY3UOn1gwdy/VbFwgo4cxecRznFk7fKWN1KOX7eoM=
