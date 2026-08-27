@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -74,6 +75,38 @@ func changedTargets[Dir any](
 	}
 
 	return normalizeTargetNames(raw), nil
+}
+
+// qualityTargetNames resolve quais targets o check de qualidade vai percorrer: todos, em ordem
+// determinística, ou só os alterados em relação a baseBranch.
+//
+// A ordem importa no modo allTargets porque o mapa de targets não tem ordem: sem o sort, dois
+// runs da mesma varredura produziriam logs em ordens diferentes e o relatório de falhas ficaria
+// impossível de comparar entre execuções.
+func qualityTargetNames[Dir any, Secret any](
+	ctx context.Context,
+	ops DaggerOps[Dir, Secret],
+	qualityTargets map[string]QualityTarget[Dir, Secret],
+	source Dir,
+	baseBranch string,
+	allTargets bool,
+) ([]string, error) {
+	if allTargets {
+		names := make([]string, 0, len(qualityTargets))
+		for name := range qualityTargets {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+
+	projectCfg := make(ProjectConfig, len(qualityTargets))
+	for name, target := range qualityTargets {
+		projectCfg[name] = target.SourcePath(name)
+		addTriggerPaths(projectCfg, name, target.ExtraTriggerPaths)
+	}
+
+	return changedTargets(ctx, ops.GetChangedProjects, projectCfg, source, baseBranch)
 }
 
 // PublishAll constrói e publica as imagens de todos os projetos alterados.
@@ -155,6 +188,11 @@ func PublishAll[Dir any, Secret any](
 // REPOSITÓRIO, acompanhada do MountPath efetivo do target como `sourcePath`. O recorte do
 // subdiretório fica a cargo da estratégia, que monta a árvore inteira para preservar o .git e os
 // caminhos do índice do git -- sem isso não há blame, e sem blame não há análise de PR.
+//
+// Com allTargets, a detecção de mudanças é pulada e todos os targets são analisados. É o que a
+// varredura completa de uma branch precisa: fora de uma merge request não existe base natural para
+// o diff, e comparar contra qualquer coisa devolveria a lista vazia -- uma varredura que não
+// varre nada e ainda assim termina verde.
 func CheckQuality[Dir any, Secret any](
 	ctx context.Context,
 	ops DaggerOps[Dir, Secret],
@@ -163,14 +201,9 @@ func CheckQuality[Dir any, Secret any](
 	baseBranch, commitSha, sonarHost string,
 	sonarToken Secret,
 	stopOnFirstFail bool,
+	allTargets bool,
 ) error {
-	projectCfg := make(ProjectConfig, len(qualityTargets))
-	for name, target := range qualityTargets {
-		projectCfg[name] = target.SourcePath(name)
-		addTriggerPaths(projectCfg, name, target.ExtraTriggerPaths)
-	}
-
-	targets, err := changedTargets(ctx, ops.GetChangedProjects, projectCfg, source, baseBranch)
+	targets, err := qualityTargetNames(ctx, ops, qualityTargets, source, baseBranch, allTargets)
 	if err != nil {
 		return err
 	}

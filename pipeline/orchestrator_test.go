@@ -186,7 +186,7 @@ func TestCheckQualityTriggersAndMounts(t *testing.T) {
 		},
 	}
 
-	if err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", true); err != nil {
+	if err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", true, false); err != nil {
 		t.Fatalf("CheckQuality: %v", err)
 	}
 
@@ -201,6 +201,38 @@ func TestCheckQualityTriggersAndMounts(t *testing.T) {
 	}
 }
 
+// TestCheckQualityAllTargets trava o motivo de o modo existir: numa varredura de branch não há
+// merge request, logo não há base para o diff, e a detecção de mudanças devolveria a lista vazia.
+// Antes do allTargets isso terminava verde sem analisar nada -- o "✅ Nenhuma mudança detectada"
+// que já passou por MR de kaizenstat, triagem e colaboradados parecendo sucesso.
+func TestCheckQualityAllTargets(t *testing.T) {
+	f := &fakeOps{changed: nil}
+	var checked []string
+	check := func(_ context.Context, _, module, _, _ string, _ string) error {
+		checked = append(checked, module)
+		return nil
+	}
+	targets := map[string]QualityTarget[string, string]{
+		"web":  {Check: check},
+		"api":  {Check: check},
+		"core": {Check: check},
+	}
+
+	if err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", false, true); err != nil {
+		t.Fatalf("CheckQuality: %v", err)
+	}
+
+	// Ordem alfabética: o mapa não tem ordem, e sem o sort dois runs da mesma varredura
+	// produziriam logs impossíveis de comparar entre si.
+	if want := []string{"api", "core", "web"}; !reflect.DeepEqual(checked, want) {
+		t.Errorf("checks = %v, quer %v", checked, want)
+	}
+	// A detecção de mudanças não pode nem ser consultada: é ela que devolveria a lista vazia.
+	if f.receivedPaths != nil {
+		t.Errorf("GetChangedProjects foi chamado no modo allTargets (recebeu %v)", f.receivedPaths)
+	}
+}
+
 func TestCheckQualityCollectsFailures(t *testing.T) {
 	f := &fakeOps{changed: []string{"a", "b"}}
 	failing := func(_ context.Context, _, _, _, _ string, _ string) error { return errors.New("boom") }
@@ -210,12 +242,12 @@ func TestCheckQualityCollectsFailures(t *testing.T) {
 		"b": {Check: ok},
 	}
 
-	err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", false)
+	err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", false, false)
 	if err == nil || !strings.Contains(err.Error(), "a: boom") {
 		t.Errorf("esperava agregação de falhas, obteve %v", err)
 	}
 
-	if err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", true); err == nil {
+	if err := CheckQuality(context.Background(), f.ops(), targets, "src", "main", "sha1", "https://sonar", "token", true, false); err == nil {
 		t.Error("esperava falha imediata com stopOnFirstFail")
 	}
 }
