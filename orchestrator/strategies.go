@@ -54,6 +54,23 @@ func pullRequestOptions(key, branch, base string) []string {
 	}
 }
 
+// branchOptions monta o `-Dsonar.branch.name` que diz ao servidor em qual branch do projeto a
+// análise deve ser gravada.
+//
+// Sem ele o scanner grava na branch principal do projeto, seja qual for a branch do git que está
+// sendo analisada. Uma varredura de `develop` sem esse parâmetro aterrissa na `main` do SonarQube:
+// código de integração registrado como produção, sem erro nenhum no log -- é o modo de falha que
+// esta opção existe para impedir.
+//
+// Mutuamente exclusivo com pullRequestOptions: quem decide entre os dois é CheckQuality, que
+// recusa a combinação em vez de escolher um por precedência.
+func branchOptions(branch string) []string {
+	if branch == "" {
+		return nil
+	}
+	return []string{"-Dsonar.branch.name=" + branch}
+}
+
 // buildStrategy escolhe a estratégia de publish do target. As estratégias fecham
 // sobre o ResolvedTarget: a lib pipeline não carrega mais nenhum campo de
 // configuração opaco.

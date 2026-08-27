@@ -77,13 +77,27 @@ Prints the SonarQube project key of every target with `sonar = true`, one per li
 
 ==== check-quality
 
-Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, and the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`.
+Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`, and the optional `--sonar-branch` / `--all-targets`.
 
 Nothing is published, but the build still carries the project's *real* version — the one declared in the version file, from the last publish. Forcing a constant there would pin SonarQube's `PREVIOUS_VERSION` new-code anchor to that constant, and the whole codebase would read as new code forever.
 
-When the merge request triple is present, the analysis becomes a *Pull Request analysis*: new code is the diff against the base branch instead of the project's new-code period, and SonarQube decorates the merge request in GitLab. All three are required — with any of them missing it falls back to branch analysis, which is the right thing outside a merge request. The shared GitLab template only runs `check-quality` on merge requests, so in practice every analysis it produces is a Pull Request analysis.
-
 Fails with an explanatory message if the configuration has custom targets.
+
+===== The three analysis modes
+
+`--merge-request-*` and `--sonar-branch` select where the analysis lands on the server. They are mutually exclusive: passing both is an error, not a precedence rule, because each one sends the result to a different place and picking one silently would report the right analysis in the wrong location.
+
+*Pull Request analysis*, when the merge request triple is present: new code is the diff against the base branch instead of the project's new-code period, and SonarQube decorates the merge request in GitLab. All three are required — with any of them missing it falls back to the third mode below.
+
+*Branch analysis*, with `--sonar-branch <name>`: emits `-Dsonar.branch.name`, so the server keeps that branch's history and Overall Code. This is what a project dashboard reads from; a project whose branches were never analysed shows "no analysis" in the project list, and SonarQube hides the project menu bar — Project Settings included — even though permissions are fine.
+
+*Neither*: the analysis is written to the project's main branch, whatever git branch was actually built. Correct when the main branch is in fact what is being analysed, silently wrong otherwise, so `check-quality` prints a warning when it happens.
+
+===== `--all-targets`
+
+Skips change detection and analyses every target with `sonar = true`, in alphabetical order.
+
+Outside a merge request there is no natural base for the diff, so change detection returns an empty list: the run prints `Nenhuma mudança detectada`, analyses nothing and still exits green. A full branch sweep must pass this flag; an incremental analysis after a merge should not, since the targets that changed are exactly the ones worth re-analysing.
 
 ==== publish-all
 

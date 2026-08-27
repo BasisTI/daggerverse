@@ -129,6 +129,19 @@ func (o *Orchestrator) CheckQuality(
 	// Branch de destino da merge request (ex: CI_MERGE_REQUEST_TARGET_BRANCH_NAME).
 	// +optional
 	mergeRequestTargetBranch string,
+	// Branch do SonarQube onde gravar a análise (ex: "develop"). Transforma a execução em análise
+	// de branch: o servidor passa a manter o histórico e o Overall Code daquela branch.
+	//
+	// Sem ela, uma execução fora de merge request grava na branch principal do projeto, seja qual
+	// for a branch do git analisada. Mutuamente exclusiva com os parâmetros de merge request.
+	// +optional
+	sonarBranch string,
+	// Analisa todos os targets com sonar = true, ignorando a detecção de mudanças.
+	//
+	// É o que a varredura completa de uma branch precisa: fora de uma merge request não existe
+	// base natural para o diff, e sem isso a execução termina verde sem ter analisado nada.
+	// +default=false
+	allTargets bool,
 ) error {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -137,12 +150,9 @@ func (o *Orchestrator) CheckQuality(
 	if err := errCustomTargets(cfg, "check-quality"); err != nil {
 		return err
 	}
-	sonarExtra := pullRequestOptions(mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
-	if sonarExtra == nil {
-		fmt.Println("ℹ️  Sem parâmetros de merge request: rodando análise de branch (sem decoração na MR).")
-	} else {
-		fmt.Printf("🔀 Análise de Pull Request !%s (%s → %s)\n",
-			mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
+	sonarExtra, err := analysisOptions(sonarBranch, mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
+	if err != nil {
+		return err
 	}
 	targets, err := qualityTargets(cfg, sonarExtra)
 	if err != nil {
@@ -157,7 +167,40 @@ func (o *Orchestrator) CheckQuality(
 		return err
 	}
 	return pipeline.CheckQuality(ctx, daggerOps(glClient), targets, o.Source,
-		baseBranch, commitSha, sonarHost, sonarToken, stopOnFirstFail)
+		baseBranch, commitSha, sonarHost, sonarToken, stopOnFirstFail, allTargets)
+}
+
+// analysisOptions decide o modo da análise e devolve as opções `-Dsonar.*` correspondentes,
+// anunciando no log qual modo foi escolhido.
+//
+// São três modos, e o log importa: os dois primeiros gravam onde se espera, o terceiro grava na
+// branch principal do projeto -- correto quando é de fato a principal que está sendo analisada, e
+// silenciosamente errado em qualquer outro caso. Daí o aviso.
+func analysisOptions(sonarBranch, mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch string) ([]string, error) {
+	hasMergeRequest := mergeRequestId != "" || mergeRequestSourceBranch != "" || mergeRequestTargetBranch != ""
+	if sonarBranch != "" && hasMergeRequest {
+		return nil, fmt.Errorf(
+			"--sonar-branch e os parâmetros de merge request são modos de análise mutuamente "+
+				"exclusivos: recebi --sonar-branch %q junto de (id=%q, source=%q, target=%q). "+
+				"Numa merge request use só os parâmetros de MR; numa varredura de branch, só o "+
+				"--sonar-branch",
+			sonarBranch, mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
+	}
+
+	if sonarBranch != "" {
+		fmt.Printf("🌿 Análise de branch: %s\n", sonarBranch)
+		return branchOptions(sonarBranch), nil
+	}
+
+	if prOptions := pullRequestOptions(mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch); prOptions != nil {
+		fmt.Printf("🔀 Análise de Pull Request !%s (%s → %s)\n",
+			mergeRequestId, mergeRequestSourceBranch, mergeRequestTargetBranch)
+		return prOptions, nil
+	}
+
+	fmt.Println("⚠️  Sem --sonar-branch e sem parâmetros de merge request: a análise será gravada " +
+		"na branch principal do projeto no SonarQube.")
+	return nil, nil
 }
 
 // PublishAll constrói e publica as imagens de todos os targets alterados e, se
