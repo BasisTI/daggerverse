@@ -255,11 +255,13 @@ func checkUv(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStra
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		// TODO(scm): o módulo uv ainda ancora uv.lock e pyproject.toml na raiz do
-		// Source, então receber a raiz do repositório quebraria essas leituras.
-		// Até ele virar path-aware como maven e npm, o subdiretório é recortado
-		// aqui -- ou seja, targets uv seguem sem .git e sem blame no Sonar.
-		u := dag.Uv(source.Directory(sourcePath), uvOpts(rt))
+		// A árvore inteira é montada, e o módulo uv recorta o target pelo ModulePath.
+		// Recortar aqui, como se fazia antes, deixava o .git para trás -- e sem SCM o
+		// Sonar não sabe o que a MR mudou, marca o projeto todo como código novo e
+		// reprova a merge request pelo débito histórico do target.
+		opts := uvOpts(rt)
+		opts.ModulePath = moduleSubpath(sourcePath)
+		u := dag.Uv(source, opts)
 		sonarConfig := u.NewSonarConfig(sonarHost, sonarToken, rt.SonarProjectKey,
 			dagger.UvNewSonarConfigOpts{ExtraOptions: sonarExtra})
 		result := u.FullBuild(dagger.UvFullBuildOpts{SonarConfig: sonarConfig})

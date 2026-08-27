@@ -78,6 +78,8 @@ func (u *Uv) NewSonarConfig(host string,
 	useCache bool,
 // +default=true
 	waitForQualityGate bool,
+// Diretório onde a árvore é montada dentro do container do scanner. O default coincide com o
+// WORKDIR da imagem sonar-scanner-cli.
 // +default="/usr/src"
 	workDir string,
 // +optional
@@ -96,6 +98,7 @@ func (u *Uv) NewSonarConfig(host string,
 		CacheKey:           cacheKey,
 		UseCache:           useCache,
 		WaitForQualityGate: waitForQualityGate,
+		WorkDir:            workDir,
 		ExtraOptions:       extraOptions,
 	}, nil
 }

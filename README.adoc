@@ -568,6 +568,10 @@ Node.js/Angular projects. Runs `npm ci`, `npm run build`, optional SonarQube ana
 
 Python projects using https://github.com/astral-sh/uv[uv]. Two-stage dependency sync (`uv sync`), optional SonarQube analysis and publishing of a slim Python image. Supports `run-subdir` and build customizations for dlt and dbt projects.
 
+Like maven and npm, the module is path-aware: `module-path` says where the project sits inside the tree it was handed. The build receives the project directly and leaves it empty; the quality check receives the whole repository and fills it in, so that the `.git` directory reaches the scanner. Without SCM data SonarQube cannot tell which lines a merge request changed, marks the *entire* project as new code, and fails the quality gate on the target's historical debt -- which is what happened to every uv target until this was fixed.
+
+For the same reason the scanner analyses the *source* tree rather than the build output: the build output is `/app` after `uv sync`, with `.venv` inside it. The build still runs before the analysis, so a broken `uv sync` fails the quality job.
+
 === orchestrator-utils
 
 Git and registry utilities used by the orchestrator: change detection between branches, commit SHA lookup, image tagging with `sha-<commit>`, bumping and committing version files, image existence checks and promotion between registries.

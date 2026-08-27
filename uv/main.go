@@ -23,6 +23,10 @@ type Uv struct {
 	UseCache   bool
 	Source     *dagger.Directory
 	RunSubdir  string
+	// ModulePath é o caminho do projeto relativo à raiz do repositório. Quando preenchido, Source é
+	// a raiz do repositório e não o projeto -- é como o check de qualidade monta a árvore, para que
+	// o .git chegue ao scanner. Vazio quando Source já é o próprio projeto, que é o caso do build.
+	ModulePath string
 	// Customizations list of Build Container customizations that will be executed. Valid values: "dbt" and  "dlt"
 	Customizations []string
 	buildContainer *dagger.Container
@@ -36,6 +40,8 @@ func New(
 	runImage string,
 	// +optional
 	runSubdir string,
+	// +optional
+	modulePath string,
 	// +default=true
 	useCache bool,
 	// Build container customizations. Valid values: "dbt" and "dlt".
@@ -45,6 +51,7 @@ func New(
 		BuildImage:     buildImage,
 		RunImage:       runImage,
 		RunSubdir:      runSubdir,
+		ModulePath:     modulePath,
 		UseCache:       useCache,
 		Source:         source,
 		Customizations: customizations,
@@ -58,6 +65,29 @@ const (
 	DefaultUvCachePath = "/root/.cache/uv"
 	WorkDir            = "/app"
 )
+
+// Workdir é o diretório onde os comandos rodam dentro do container: /app quando Source já é o
+// projeto, /app/<ModulePath> quando Source é a raiz do repositório.
+func (u *Uv) Workdir() string {
+	return joinPath(WorkDir, u.ModulePath)
+}
+
+// moduleDir recorta o projeto de dentro de Source. É o que as leituras ancoradas na raiz do
+// projeto usam -- pyproject.toml, uv.lock -- para continuarem funcionando quando Source é a raiz
+// do repositório.
+func (u *Uv) moduleDir() *dagger.Directory {
+	if u.ModulePath == "" {
+		return u.Source
+	}
+	return u.Source.Directory(u.ModulePath)
+}
+
+func joinPath(base, sub string) string {
+	if sub == "" {
+		return base
+	}
+	return base + "/" + sub
+}
 
 func (u *Uv) FullBuild(
 	ctx context.Context,
@@ -75,14 +105,14 @@ func (u *Uv) FullBuild(
 	buildResult := BuildResult{}
 
 	if version == "" {
-		pyProject, err := GetPythonVersion(ctx, u.Source)
+		pyProject, err := GetPythonVersion(ctx, u.moduleDir())
 		if err != nil {
 			return nil, err
 		}
 		version = pyProject.Project.Version
 	}
 	builder := u.BuildContainer()
-	buildDirectory := builder.Directory(WorkDir)
+	buildDirectory := builder.Directory(u.Workdir())
 	buildResult.Artifacts = buildDirectory
 	path := fmt.Sprintf("%s/%s", WorkDir, u.RunSubdir)
 	created := time.Now().Format(time.RFC3339)
@@ -98,7 +128,7 @@ func (u *Uv) FullBuild(
 		appContainer = appContainer.WithLabel("org.opencontainers.image.revision", commitSha)
 	}
 	if sonarConfig != nil {
-		_, err := u.runSonarAnalysis(ctx, sonarConfig, buildDirectory, &buildResult)
+		_, err := u.runSonarAnalysis(ctx, sonarConfig, builder, &buildResult)
 		if err != nil {
 			return &buildResult, err
 		}
@@ -130,8 +160,25 @@ func (u *Uv) publishDockerImage(
 	return nil
 }
 
-func (u *Uv) runSonarAnalysis(ctx context.Context, sonarConfig *SonarConfig, buildDirectory *dagger.Directory, buildResult *BuildResult) (*BuildResult, error) {
-	sonarContainer, err := u.createSonarContainer(ctx, sonarConfig, buildDirectory)
+// runSonarAnalysis roda o scanner sobre a ÁRVORE DE FONTES, não sobre o diretório de build.
+//
+// O que está em jogo é o .git. O scanner precisa dele para saber quais linhas a merge request
+// mudou; sem SCM ele marca o projeto INTEIRO como código novo, e o quality gate cobra da MR todo
+// o débito histórico do target. Foi o que reprovou a MR 584 do licitacao: 126 violações, das
+// quais 111 em arquivos que a MR nunca tocou, mais 9% de duplicação e 0% de hotspots revisados --
+// tudo do passado, nada da mudança.
+//
+// O diretório de build não serviria de qualquer forma: ele é o /app depois do `uv sync`, com o
+// .venv dentro. Na MR 584 o scanner gastou 42 dos 78 segundos de análise passeando por
+// site-packages, reclamando de encoding em .pyc e .so.
+//
+// A contrapartida é que o build deixa de ser dependência implícita da análise: num job que só
+// roda check-quality, um `uv sync` quebrado passaria verde. Daí o Sync explícito antes.
+func (u *Uv) runSonarAnalysis(ctx context.Context, sonarConfig *SonarConfig, builder *dagger.Container, buildResult *BuildResult) (*BuildResult, error) {
+	if _, err := builder.Sync(ctx); err != nil {
+		return buildResult, fmt.Errorf("build falhou antes da análise do Sonar: %w", err)
+	}
+	sonarContainer, err := u.createSonarContainer(ctx, sonarConfig, u.Source)
 	if err != nil {
 		fmt.Println("Failed to create sonar container")
 	} else {
@@ -156,13 +203,14 @@ func (u *Uv) BuildContainer() *dagger.Container {
 func (u *Uv) NewContainer() *dagger.Container {
 	buildContainer := u.buildContainer
 	if buildContainer == nil {
+		moduleDir := u.moduleDir()
 		buildContainer = dag.Container().From(u.BuildImage).
-			WithWorkdir(WorkDir).
+			WithWorkdir(u.Workdir()).
 			WithEnvVariable("UV_COMPILE_BYTECODE", "1").
 			WithEnvVariable("UV_LINK_MODE", "copy").
 			WithEnvVariable("PYTHONUNBUFFERED", "1").
 			WithEnvVariable("UV_PYTHON_DOWNLOADS", "0").
-			WithFiles(WorkDir, []*dagger.File{u.Source.File("uv.lock"), u.Source.File("pyproject.toml")}).
+			WithFiles(u.Workdir(), []*dagger.File{moduleDir.File("uv.lock"), moduleDir.File("pyproject.toml")}).
 			WithExec([]string{"uv", "sync", "--frozen", "--no-install-project", "--no-dev"}).
 			WithDirectory(WorkDir, u.Source)
 		for _, name := range u.Customizations {
@@ -186,7 +234,10 @@ func (u Uv) createSonarContainer(
 	sonarContainer := dag.Container().
 		From(config.AnalysisImage).
 		WithDirectory(config.WorkDir, source, dagger.ContainerWithDirectoryOpts{Owner: "scanner-cli"}).
-		WithWorkdir(config.WorkDir)
+		// O scanner roda do subdiretório do módulo, mas com a árvore inteira montada: é assim que
+		// ele acha o .git subindo a árvore, e é o que faz os caminhos do blame baterem com os do
+		// índice do git. Analisar direto o subdiretório recortado deixaria o projeto sem SCM.
+		WithWorkdir(joinPath(config.WorkDir, u.ModulePath))
 	if config.UseCache {
 		sonarContainer = sonarContainer.WithMountedCache(
 			"/opt/sonar-scanner/.sonar/cache",
