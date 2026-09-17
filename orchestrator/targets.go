@@ -18,13 +18,13 @@ type qualityTarget = pipeline.QualityTarget[*dagger.Directory, *dagger.Secret]
 //
 // Targets custom não têm estratégia e são rejeitados antes daqui, por
 // errCustomTargets.
-func buildTargets(cfg *config.Config) (map[string]buildTarget, error) {
+func buildTargets(cfg *config.Config, nvdApiKey *dagger.Secret) (map[string]buildTarget, error) {
 	targets := make(map[string]buildTarget, len(cfg.Targets))
 	for _, rt := range cfg.ResolveAll() {
 		if rt.Type == config.TypeCustom {
 			continue
 		}
-		build, err := buildStrategy(rt, cfg.Project.Group)
+		build, err := buildStrategy(rt, cfg.Project.Group, nvdApiKey)
 		if err != nil {
 			return nil, err
 		}
@@ -42,7 +42,7 @@ func buildTargets(cfg *config.Config) (map[string]buildTarget, error) {
 
 // qualityTargets converte os targets com `sonar = true` no mapa de
 // QualityTargets consumido por pipeline.CheckQuality.
-func qualityTargets(cfg *config.Config, sonarExtra []string) (map[string]qualityTarget, error) {
+func qualityTargets(cfg *config.Config, sonarExtra []string, nvdApiKey *dagger.Secret) (map[string]qualityTarget, error) {
 	targets := make(map[string]qualityTarget, len(cfg.Targets))
 	for _, name := range cfg.SonarTargetNames() {
 		rt, err := cfg.Resolve(name)
@@ -52,7 +52,7 @@ func qualityTargets(cfg *config.Config, sonarExtra []string) (map[string]quality
 		if rt.Type == config.TypeCustom {
 			continue
 		}
-		check, err := qualityStrategy(rt, sonarExtra)
+		check, err := qualityStrategy(rt, sonarExtra, nvdApiKey)
 		if err != nil {
 			return nil, err
 		}
