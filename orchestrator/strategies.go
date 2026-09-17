@@ -74,10 +74,10 @@ func branchOptions(branch string) []string {
 // buildStrategy escolhe a estratégia de publish do target. As estratégias fecham
 // sobre o ResolvedTarget: a lib pipeline não carrega mais nenhum campo de
 // configuração opaco.
-func buildStrategy(rt config.ResolvedTarget, group string) (pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret], error) {
+func buildStrategy(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secret) (pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret], error) {
 	switch rt.Type {
 	case config.TypeMaven:
-		return publishMaven(rt, group), nil
+		return publishMaven(rt, group, nvdApiKey), nil
 	case config.TypeNpm:
 		return publishNpm(rt, group), nil
 	case config.TypeUv:
@@ -95,10 +95,10 @@ func buildStrategy(rt config.ResolvedTarget, group string) (pipeline.BuildStrate
 // cuja imagem sai de um Dockerfile próprio mas cujo código é um projeto Python
 // declara `quality-type = "uv"` e roda checkUv normalmente. Sem `quality-type`,
 // QualityType é igual a Type e o despacho é o de sempre.
-func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
+func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
 	switch rt.QualityType {
 	case config.TypeMaven:
-		return checkMaven(rt, sonarExtra), nil
+		return checkMaven(rt, sonarExtra, nvdApiKey), nil
 	case config.TypeNpm:
 		return checkNpm(rt, sonarExtra), nil
 	case config.TypeUv:
@@ -122,13 +122,16 @@ func mavenModule(rt config.ResolvedTarget, target string) string {
 	return target
 }
 
-func mavenOpts(rt config.ResolvedTarget) dagger.MavenOpts {
+// mavenOpts monta as opções do módulo maven. A chave do NVD não vem do TOML: é
+// segredo, e o TOML é versionado. Chega pela invocação, como o token do Sonar.
+func mavenOpts(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) dagger.MavenOpts {
 	return dagger.MavenOpts{
 		BuildImage:         rt.MavenImage,
 		UseDocker:          rt.UseDocker,
 		ReactorMode:        rt.Reactor,
 		ExtraOptions:       rt.ExtraOptions,
 		SonarPluginVersion: rt.SonarPluginVersion,
+		NvdAPIKey:          nvdApiKey,
 	}
 }
 
@@ -140,13 +143,13 @@ func mavenSource(source *dagger.Directory) *dagger.Directory {
 	})
 }
 
-func publishMaven(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret] {
+func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secret) pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, commitSha, version, registry, registryUser string,
 		registryPassword *dagger.Secret,
 	) (string, error) {
-		m := dag.Maven(mavenOpts(rt))
+		m := dag.Maven(mavenOpts(rt, nvdApiKey))
 		// O DockerBuildConfig do maven recebe a referência completa; a tag fica
 		// embutida nela (jib.to.image aceita ref com tag), de modo que a imagem
 		// devolvida por ImageURL é exatamente a que foi publicada.
@@ -157,12 +160,12 @@ func publishMaven(rt config.ResolvedTarget, group string) pipeline.BuildStrategy
 	}
 }
 
-func checkMaven(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		m := dag.Maven(mavenOpts(rt))
+		m := dag.Maven(mavenOpts(rt, nvdApiKey))
 		// A chave do Sonar vem do target resolvido, não do argumento `module`:
 		// aqui `module` é o path do módulo no reactor, e a chave é o
 		// identificador do projeto no servidor (default: o nome do target).

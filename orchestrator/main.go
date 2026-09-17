@@ -142,6 +142,15 @@ func (o *Orchestrator) CheckQuality(
 	// base natural para o diff, e sem isso a execução termina verde sem ter analisado nada.
 	// +default=false
 	allTargets bool,
+	// Chave da API do NVD, exportada como NVD_API_KEY no container de build.
+	//
+	// O dependency-check-maven 13+ recusa consultar o NVD sem chave e aborta o goal, derrubando o
+	// `mvn verify` inteiro. O container é hermético: uma variável do job do GitLab não chega nele,
+	// então a chave precisa ser entregue explicitamente, como o token do Sonar.
+	//
+	// Opcional: projeto sem o plugin não passa nada e nada muda.
+	// +optional
+	nvdApiKey *dagger.Secret,
 ) error {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -154,7 +163,7 @@ func (o *Orchestrator) CheckQuality(
 	if err != nil {
 		return err
 	}
-	targets, err := qualityTargets(cfg, sonarExtra)
+	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey)
 	if err != nil {
 		return err
 	}
@@ -246,6 +255,15 @@ func (o *Orchestrator) PublishAll(
 	// +optional
 	// +default="develop"
 	gitBranch string,
+	// Chave da API do NVD, exportada como NVD_API_KEY no container de build.
+	//
+	// O dependency-check-maven 13+ recusa consultar o NVD sem chave e aborta o goal, derrubando o
+	// `mvn verify` inteiro. O container é hermético: uma variável do job do GitLab não chega nele,
+	// então a chave precisa ser entregue explicitamente, como o token do Sonar.
+	//
+	// Opcional: projeto sem o plugin não passa nada e nada muda.
+	// +optional
+	nvdApiKey *dagger.Secret,
 ) (string, error) {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -254,7 +272,7 @@ func (o *Orchestrator) PublishAll(
 	if err := errCustomTargets(cfg, "publish-all"); err != nil {
 		return "", err
 	}
-	targets, err := buildTargets(cfg)
+	targets, err := buildTargets(cfg, nvdApiKey)
 	if err != nil {
 		return "", err
 	}

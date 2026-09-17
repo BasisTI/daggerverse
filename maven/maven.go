@@ -54,6 +54,8 @@ type Maven struct {
 	UseDocker bool
 	// Version of sonar-maven-plugin used for the analysis
 	SonarPluginVersion string
+	// API key exported to the build as NVD_API_KEY, for OWASP Dependency-Check
+	NvdApiKey *dagger.Secret
 }
 
 // DefaultSonarPluginVersion is the sonar-maven-plugin release the analysis runs with.
@@ -105,7 +107,17 @@ func New(
 	// cannot break the pipelines without a commit, and so the scanner stays compatible with the
 	// server the org actually runs.
 	// +default="5.7.0.6970"
-	sonarPluginVersion string) *Maven {
+	sonarPluginVersion string,
+	// API key for the NVD API, exported to the build container as NVD_API_KEY.
+	//
+	// It exists because dependency-check-maven 13+ refuses to query the NVD without a key and
+	// aborts the goal, which fails the whole `mvn verify`. The build container is hermetic: a
+	// variable set on the CI job does not reach it, so the key has to be handed in explicitly.
+	//
+	// Passed as a Secret, not a string: Dagger keeps it out of the operation graph and out of
+	// the logs, and WithSecretVariable never bakes it into a layer.
+	// +optional
+	nvdApiKey *dagger.Secret) *Maven {
 	m := &Maven{
 		Image:               buildImage,
 		UseMvnw:             useMvnw,
@@ -116,6 +128,7 @@ func New(
 		UseJib:              useJib,
 		UseDocker:           useDocker,
 		SonarPluginVersion:  sonarPluginVersion,
+		NvdApiKey:           nvdApiKey,
 	}
 	if m.SonarPluginVersion == "" {
 		m.SonarPluginVersion = DefaultSonarPluginVersion
@@ -128,6 +141,9 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 	container := dag.Container().From(m.Image).WithWorkdir(BaseWorkdir)
 	if m.UseCache {
 		container = container.WithMountedCache("/root/.m2", dag.CacheVolume(DefaultMavenCacheName))
+	}
+	if m.NvdApiKey != nil {
+		container = container.WithSecretVariable("NVD_API_KEY", m.NvdApiKey)
 	}
 	if m.UseDocker {
 		container = m.withDocker(container)
