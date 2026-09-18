@@ -183,6 +183,42 @@ func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger
 	}
 }
 
+// --- security ---
+
+// SecurityProfile é o perfil Maven que liga as verificações de segurança do projeto.
+//
+// O nome é do contrato entre o CI e o pom, não de uma ferramenta: hoje o perfil carrega
+// só o OWASP Dependency-Check, e é para dentro dele que vão as próximas verificações.
+// Projeto que não declara o perfil não quebra -- o Maven avisa que o perfil não existe e
+// segue com o `verify` normal.
+const SecurityProfile = "security-check"
+
+// securityMaven roda o `verify` do target com o perfil de segurança ligado e sem Sonar.
+//
+// Sem SonarConfig o FullBuild para em `mvn clean verify`, que é o que a varredura quer. O
+// gate do Sonar já roda na merge request e na develop; repeti-lo aqui faria o agendamento
+// falhar por dívida antiga que ninguém acabou de introduzir, e o vermelho de um scan de
+// segurança precisa significar uma coisa só.
+//
+// ExtraOptions é reconstruída em vez de ter o perfil anexado: rt.ExtraOptions vem do
+// pipeline.toml e é compartilhada por todos os targets resolvidos da mesma config, então
+// um append nela vazaria o -P para os outros builds.
+func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+	return func(
+		ctx context.Context, source *dagger.Directory,
+		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
+	) error {
+		opts := mavenOpts(rt, nvdApiKey)
+		opts.ExtraOptions = append(append([]string{}, rt.ExtraOptions...), "-P"+SecurityProfile)
+		m := dag.Maven(opts)
+		// Versão e commit vazios: a varredura não publica nada e não reescreve o pom.
+		result := m.FullBuild(mavenSource(source), mavenModule(rt, module), "", "",
+			dagger.MavenFullBuildOpts{ModulePath: qualityModulePath(rt, sourcePath)})
+		_, err := result.ImageURL(ctx)
+		return err
+	}
+}
+
 // --- npm ---
 
 func npmOpts(rt config.ResolvedTarget) dagger.NpmOpts {
