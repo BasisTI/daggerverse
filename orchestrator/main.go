@@ -212,6 +212,51 @@ func analysisOptions(sonarBranch, mergeRequestId, mergeRequestSourceBranch, merg
 	return nil, nil
 }
 
+// SecurityCheck roda a varredura de segurança de todos os targets Maven do repositório.
+//
+// É irmã de CheckQuality, com três diferenças deliberadas:
+//
+//  1. Sem Sonar. A varredura verifica dependências, não código; o gate de qualidade já roda
+//     na merge request e na develop.
+//  2. Sem detecção de mudanças -- roda sempre em todos os targets. O que ela procura não
+//     está no diff: a base de CVE do NVD muda sozinha, e um target parado há meses é
+//     justamente o que tem mais chance de ter apodrecido. Detecção de mudanças aqui faria
+//     a varredura terminar verde sem ter varrido nada.
+//  3. Sem commit status no GitLab. Ela nasce de agendamento, não de um commit que alguém
+//     está esperando para mergear.
+//
+// A chave do NVD é obrigatória e não opcional como em CheckQuality: sem ela o
+// dependency-check-maven 13+ aborta, e uma varredura de segurança que não consegue
+// consultar a base não tem por que rodar.
+func (o *Orchestrator) SecurityCheck(
+	ctx context.Context,
+	// Chave da API do NVD, exportada como NVD_API_KEY no container de build.
+	nvdApiKey *dagger.Secret,
+	// Se true, para no primeiro target que falhar.
+	// +default=false
+	stopOnFirstFail bool,
+) error {
+	cfg, err := o.loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := errCustomTargets(cfg, "security-check"); err != nil {
+		return err
+	}
+	targets, err := securityTargets(cfg, nvdApiKey)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		fmt.Println("✅ Nenhum target Maven. Nada a varrer.")
+		return nil
+	}
+	// baseBranch, commitSha e sonarHost vazios, sonarToken nil: allTargets = true dispensa a
+	// base do diff, e a estratégia de segurança ignora os parâmetros de Sonar.
+	return pipeline.CheckQuality(ctx, daggerOps(nil), targets, o.Source,
+		"", "", "", nil, stopOnFirstFail, true)
+}
+
 // PublishAll constrói e publica as imagens de todos os targets alterados e, se
 // gitRemoteUrl for informado, commita os arquivos de versão bumpados.
 //

@@ -66,6 +66,37 @@ func qualityTargets(cfg *config.Config, sonarExtra []string, nvdApiKey *dagger.S
 	return targets, nil
 }
 
+// securityTargets converte os targets analisáveis pelo Maven no mapa consumido por
+// pipeline.CheckQuality, com o check trocado pela varredura de segurança.
+//
+// A seleção NÃO é `sonar = true`, diferente de qualityTargets: segurança não tem relação
+// com análise estática, e um target pode querer o scan de dependências sem estar no
+// SonarQube. O filtro é o quality-type efetivo, porque é ele que diz se existe um build
+// Maven para rodar o perfil.
+//
+// Os outros quality-types são ignorados em silêncio por enquanto: não existe equivalente
+// do perfil em npm ou uv, e falhar neles transformaria "ainda não implementado" em
+// agendamento vermelho toda semana.
+func securityTargets(cfg *config.Config, nvdApiKey *dagger.Secret) (map[string]qualityTarget, error) {
+	targets := make(map[string]qualityTarget, len(cfg.Targets))
+	for _, name := range cfg.TargetNames() {
+		rt, err := cfg.Resolve(name)
+		if err != nil {
+			return nil, err
+		}
+		if rt.QualityType != config.TypeMaven {
+			continue
+		}
+		targets[rt.Name] = qualityTarget{
+			Check:             securityMaven(rt, nvdApiKey),
+			Path:              rt.Path,
+			MountPath:         rt.SourcePath,
+			ExtraTriggerPaths: rt.ExtraTriggerPaths,
+		}
+	}
+	return targets, nil
+}
+
 // customTargetNames lista, em ordem alfabética, os targets type = "custom".
 func customTargetNames(cfg *config.Config) []string {
 	return cfg.TargetNamesByType(config.TypeCustom)
