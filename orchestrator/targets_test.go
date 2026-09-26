@@ -498,3 +498,41 @@ func TestNewGitLabClientRequiresFullConfig(t *testing.T) {
 		t.Errorf("client mal montado: %+v", client)
 	}
 }
+
+// TestSecurityTargetsAreMavenInOrder garante que a varredura cobre todo target cujo
+// quality-type efetivo é Maven -- com ou sem Sonar -- e só eles, em ordem alfabética: é a
+// ordem em que os relatórios são gerados e em que aparecem no log do job.
+func TestSecurityTargetsAreMavenInOrder(t *testing.T) {
+	for _, fixture := range allFixtures {
+		t.Run(fixture, func(t *testing.T) {
+			cfg := loadTestdata(t, fixture)
+			targets, err := securityTargets(cfg, nil)
+			if err != nil {
+				t.Fatalf("securityTargets: %v", err)
+			}
+			var want []string
+			for _, name := range cfg.TargetNames() {
+				rt, err := cfg.Resolve(name)
+				if err != nil {
+					t.Fatalf("Resolve(%s): %v", name, err)
+				}
+				if rt.QualityType == config.TypeMaven {
+					want = append(want, rt.Name)
+				}
+			}
+			var got []string
+			for _, target := range targets {
+				if target.scan == nil {
+					t.Errorf("%s sem varredura", target.name)
+				}
+				got = append(got, target.name)
+			}
+			if !sort.StringsAreSorted(got) {
+				t.Errorf("targets fora de ordem: %v", got)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("securityTargets = %v, quer %v", got, want)
+			}
+		})
+	}
+}

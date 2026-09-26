@@ -212,7 +212,8 @@ func analysisOptions(sonarBranch, mergeRequestId, mergeRequestSourceBranch, merg
 	return nil, nil
 }
 
-// SecurityCheck roda a varredura de segurança de todos os targets Maven do repositório.
+// SecurityCheck roda a varredura de segurança de todos os targets Maven do repositório e
+// devolve os relatórios, um subdiretório por target.
 //
 // É irmã de CheckQuality, com três diferenças deliberadas:
 //
@@ -228,33 +229,72 @@ func analysisOptions(sonarBranch, mergeRequestId, mergeRequestSourceBranch, merg
 // A chave do NVD é obrigatória e não opcional como em CheckQuality: sem ela o
 // dependency-check-maven 13+ aborta, e uma varredura de segurança que não consegue
 // consultar a base não tem por que rodar.
+//
+// Target que falha NÃO vira erro da função. Uma função Dagger que devolve erro não devolve
+// o diretório, e o `export` encadeado não teria o que exportar -- o relatório do target que
+// falhou, justamente o que interessa, iria embora com o container. Em vez disso o resultado
+// de cada target fica escrito no diretório:
+//
+//	<target>/exit-code                                    código de saída do `mvn verify`
+//	<target>/<módulo>/target/dependency-check-report.html  um por módulo buildado, com o
+//	<target>/<módulo>/target/dependency-check-report.json  caminho que ele tem no repositório
+//	FAILED                                               só existe se algum target falhou; lista os que falharam
+//
+// e cabe a quem chama transformar o FAILED em falha -- o template do CI faz isso depois do
+// export. Erro da função fica reservado ao que impede a varredura de começar (config
+// inválida, target custom) ou de terminar (falha do engine).
 func (o *Orchestrator) SecurityCheck(
 	ctx context.Context,
 	// Chave da API do NVD, exportada como NVD_API_KEY no container de build.
 	nvdApiKey *dagger.Secret,
-	// Se true, para no primeiro target que falhar.
+	// Se true, para no primeiro target que falhar. Os targets seguintes ficam sem relatório.
 	// +default=false
 	stopOnFirstFail bool,
-) error {
+) (*dagger.Directory, error) {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := errCustomTargets(cfg, "security-check"); err != nil {
-		return err
+		return nil, err
 	}
 	targets, err := securityTargets(cfg, nvdApiKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	out := dag.Directory()
 	if len(targets) == 0 {
 		fmt.Println("✅ Nenhum target Maven. Nada a varrer.")
-		return nil
+		return out, nil
 	}
-	// baseBranch, commitSha e sonarHost vazios, sonarToken nil: allTargets = true dispensa a
-	// base do diff, e a estratégia de segurança ignora os parâmetros de Sonar.
-	return pipeline.CheckQuality(ctx, daggerOps(nil), targets, o.Source,
-		"", "", "", nil, stopOnFirstFail, true)
+	names := make([]string, len(targets))
+	for i, t := range targets {
+		names[i] = t.name
+	}
+	fmt.Printf("🎯 Targets para security check: %v\n", names)
+	var failed []string
+	for _, t := range targets {
+		fmt.Printf("🔍 [Security] Varrendo: %s\n", t.name)
+		reports, exitCode, err := t.scan(ctx, o.Source)
+		if err != nil {
+			return nil, fmt.Errorf("varredura de %s: %w", t.name, err)
+		}
+		out = out.WithDirectory(t.name, reports).
+			WithNewFile(t.name+"/exit-code", fmt.Sprintf("%d\n", exitCode))
+		if exitCode != 0 {
+			failed = append(failed, t.name)
+			fmt.Printf("❌ [Security] Falhou: %s (exit %d)\n", t.name, exitCode)
+			if stopOnFirstFail {
+				break
+			}
+			continue
+		}
+		fmt.Printf("✅ [Security] OK: %s\n", t.name)
+	}
+	if len(failed) > 0 {
+		out = out.WithNewFile("FAILED", strings.Join(failed, "\n")+"\n")
+	}
+	return out, nil
 }
 
 // PublishAll constrói e publica as imagens de todos os targets alterados e, se
