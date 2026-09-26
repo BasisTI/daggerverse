@@ -227,17 +227,8 @@ func (m *Maven) sonarGoal() string {
 	return "org.sonarsource.scanner.maven:sonar-maven-plugin:" + version + ":sonar"
 }
 
-// executeStages runs the provided pipeline stages sequentially using a shared container.
-func (m *Maven) executeStages(
-	ctx context.Context,
-	source *dagger.Directory,
-	module string,
-	moduleDir string,
-	rootMounted bool,
-	stages []PipelineStage,
-	gitlabClient *gitlabci.Client,
-	commitSha string,
-) (*ModuleBuildResult, error) {
+// mountSource monta o código no container base e posiciona o workdir onde o mvn deve rodar.
+func (m *Maven) mountSource(source *dagger.Directory, moduleDir string, rootMounted bool) *dagger.Container {
 	// Com rootMounted, `source` é a raiz do repositório e vai inteira para /app -- é o que o
 	// reactor precisa (-pl/-am exigem os módulos irmãos em disco) e o que dá ao Sonar um .git
 	// coerente, já que aí todo arquivo fica no mesmo caminho que tem no índice do git.
@@ -253,9 +244,23 @@ func (m *Maven) executeStages(
 	if m.ReactorMode {
 		workdir = BaseWorkdir
 	}
-	stageContainer := m.Container().
+	return m.Container().
 		WithDirectory(mountPath, source, dagger.ContainerWithDirectoryOpts{Exclude: excludes}).
 		WithWorkdir(workdir)
+}
+
+// executeStages runs the provided pipeline stages sequentially using a shared container.
+func (m *Maven) executeStages(
+	ctx context.Context,
+	source *dagger.Directory,
+	module string,
+	moduleDir string,
+	rootMounted bool,
+	stages []PipelineStage,
+	gitlabClient *gitlabci.Client,
+	commitSha string,
+) (*ModuleBuildResult, error) {
+	stageContainer := m.mountSource(source, moduleDir, rootMounted)
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
 		statusName := ""

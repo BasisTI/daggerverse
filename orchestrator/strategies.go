@@ -193,29 +193,45 @@ func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger
 // segue com o `verify` normal.
 const SecurityProfile = "security-check"
 
+// SecurityReportFormats são os formatos pedidos ao Dependency-Check: HTML para gente ler no
+// artefato do job, JSON para máquina.
+//
+// Vai por -Dformats porque o plugin (13.x) liga o parâmetro `formats` à property de mesmo
+// nome, e `formats`, quando preenchido, prevalece sobre `format` -- que é o que os poms
+// costumam declarar, ou nem declarar (default HTML). O limite: configuração explícita no pom
+// vence property de linha de comando, então um pom que declare `<formats>` fica com os
+// formatos dele e o -D é ignorado. Nesse caso o artefato traz só o que o pom pede.
+const SecurityReportFormats = "HTML,JSON"
+
+// securityScan roda a varredura de um target e devolve os relatórios e o código de saída do mvn.
+type securityScan func(ctx context.Context, source *dagger.Directory) (*dagger.Directory, int, error)
+
 // securityMaven roda o `verify` do target com o perfil de segurança ligado e sem Sonar.
 //
-// Sem SonarConfig o FullBuild para em `mvn clean verify`, que é o que a varredura quer. O
-// gate do Sonar já roda na merge request e na develop; repeti-lo aqui faria o agendamento
-// falhar por dívida antiga que ninguém acabou de introduzir, e o vermelho de um scan de
-// segurança precisa significar uma coisa só.
+// Sem Sonar a varredura para em `mvn clean verify`, que é o que ela quer. O gate do Sonar já
+// roda na merge request e na develop; repeti-lo aqui faria o agendamento falhar por dívida
+// antiga que ninguém acabou de introduzir, e o vermelho de um scan de segurança precisa
+// significar uma coisa só.
+//
+// Usa SecurityScan, e não FullBuild, porque FullBuild descarta o container quando o mvn falha
+// -- e com ele o relatório, que é o que o build vermelho tem de mais útil.
 //
 // ExtraOptions é reconstruída em vez de ter o perfil anexado: rt.ExtraOptions vem do
 // pipeline.toml e é compartilhada por todos os targets resolvidos da mesma config, então
 // um append nela vazaria o -P para os outros builds.
-func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
-	return func(
-		ctx context.Context, source *dagger.Directory,
-		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
-	) error {
+func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) securityScan {
+	return func(ctx context.Context, source *dagger.Directory) (*dagger.Directory, int, error) {
 		opts := mavenOpts(rt, nvdApiKey)
-		opts.ExtraOptions = append(append([]string{}, rt.ExtraOptions...), "-P"+SecurityProfile)
-		m := dag.Maven(opts)
-		// Versão e commit vazios: a varredura não publica nada e não reescreve o pom.
-		result := m.FullBuild(mavenSource(source), mavenModule(rt, module), "", "",
-			dagger.MavenFullBuildOpts{ModulePath: qualityModulePath(rt, sourcePath)})
-		_, err := result.ImageURL(ctx)
-		return err
+		opts.ExtraOptions = append(append([]string{}, rt.ExtraOptions...),
+			"-P"+SecurityProfile, "-Dformats="+SecurityReportFormats)
+		qt := qualityTarget{Path: rt.Path, MountPath: rt.SourcePath}
+		result := dag.Maven(opts).SecurityScan(mavenSource(source), mavenModule(rt, rt.Name),
+			dagger.MavenSecurityScanOpts{ModulePath: qualityModulePath(rt, qt.EffectiveMountPath(rt.Name))})
+		exitCode, err := result.ExitCode(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		return result.Reports(), exitCode, nil
 	}
 }
 
