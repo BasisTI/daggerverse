@@ -122,3 +122,15 @@ func TestSecuritySummaryRejectsBadJSON(t *testing.T) {
 		t.Error("JSON inválido deveria dar erro")
 	}
 }
+
+func TestSkippedReportFilesIncludesJUnit(t *testing.T) {
+	got := skippedReportFiles([]string{"triagem-core/target/dependency-check-report.json"})
+	want := []string{
+		"triagem-core/target/dependency-check-report.json",
+		"triagem-core/target/dependency-check-report.html",
+		"triagem-core/target/dependency-check-junit.xml",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("= %v, esperado %v", got, want)
+	}
+}

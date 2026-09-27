@@ -16,6 +16,9 @@ import (
 // nome com extensão .html, no mesmo diretório.
 const dependencyCheckJSON = "dependency-check-report.json"
 
+// dependencyCheckJUnit é o relatório JUnit, gravado no mesmo diretório com nome próprio.
+const dependencyCheckJUnit = "dependency-check-junit.xml"
+
 // Severidades contadas no índice, da mais grave para a menos. O que não casa com nenhuma delas
 // (UNKNOWN, INFO, vazio) vai para OTHER.
 var severities = []string{"CRITICAL", "HIGH", "MEDIUM", "LOW"}
@@ -57,7 +60,7 @@ type SecuritySummary struct {
 }
 
 // SecurityReportIndex arruma o diretório devolvido pelo security-check: descarta os relatórios
-// vazios e escreve na raiz um index.html e um summary.json.
+// vazios e escreve na raiz um index.html, um summary.json e um badge.svg.
 //
 // Vive aqui, e não no orchestrator, para que o orchestrator local de um projeto
 // (DAGGER_MODULE: ".") que implemente o mesmo contrato chame a mesma função em vez de
@@ -65,8 +68,8 @@ type SecuritySummary struct {
 //
 // Relatório vazio é o de um módulo sem dependências -- na prática o pom pai ou agregador, que
 // o -am põe no reactor. Ele ficava em <target>/target/, o primeiro caminho que se vê ao
-// navegar, e parecia dizer que o target não tinha nada. O HTML e o JSON dele saem do
-// diretório; o caminho dos demais, o exit-code e o FAILED ficam como estão.
+// navegar, e parecia dizer que o target não tinha nada. O HTML, o JSON e o JUnit dele saem do
+// diretório -- o JUnit também porque viraria uma suíte vazia na aba Tests; o caminho dos demais, o exit-code e o FAILED ficam como estão.
 func (u *OrchestratorUtils) SecurityReportIndex(
 	ctx context.Context,
 	// Diretório no formato do security-check: <target>/exit-code,
@@ -102,17 +105,25 @@ func (u *OrchestratorUtils) SecurityReportIndex(
 	if err != nil {
 		return nil, err
 	}
-	var drop []string
-	for _, p := range summary.Skipped {
-		drop = append(drop, p, htmlReportPath(p))
-	}
+	drop := skippedReportFiles(summary.Skipped)
 	summaryJSON, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	return reports.WithoutFiles(drop).
 		WithNewFile("summary.json", string(summaryJSON)+"\n").
-		WithNewFile("index.html", renderSecurityIndex(summary)), nil
+		WithNewFile("index.html", renderSecurityIndex(summary)).
+		WithNewFile("badge.svg", renderSecurityBadge(summary)), nil
+}
+
+// skippedReportFiles lista os arquivos a remover para cada relatório vazio: o JSON, o HTML e o
+// JUnit do mesmo diretório.
+func skippedReportFiles(skipped []string) []string {
+	var drop []string
+	for _, p := range skipped {
+		drop = append(drop, p, htmlReportPath(p), path.Join(path.Dir(p), dependencyCheckJUnit))
+	}
+	return drop
 }
 
 func htmlReportPath(jsonPath string) string {
