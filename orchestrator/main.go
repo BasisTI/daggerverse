@@ -239,6 +239,10 @@ func analysisOptions(sonarBranch, mergeRequestId, mergeRequestSourceBranch, merg
 //	<target>/<módulo>/target/dependency-check-report.html  um por módulo buildado, com o
 //	<target>/<módulo>/target/dependency-check-report.json  caminho que ele tem no repositório
 //	FAILED                                               só existe se algum target falhou; lista os que falharam
+//	index.html, summary.json                             visão geral, uma linha por relatório
+//
+// O diretório passa por orchestrator-utils.SecurityReportIndex, que escreve o índice e tira os
+// relatórios sem dependências (o do pom pai que o -am põe no reactor).
 //
 // e cabe a quem chama transformar o FAILED em falha -- o template do CI faz isso depois do
 // export. Erro da função fica reservado ao que impede a varredura de começar (config
@@ -294,7 +298,7 @@ func (o *Orchestrator) SecurityCheck(
 	if len(failed) > 0 {
 		out = out.WithNewFile("FAILED", strings.Join(failed, "\n")+"\n")
 	}
-	return out, nil
+	return dag.OrchestratorUtils().SecurityReportIndex(out), nil
 }
 
 // PublishAll constrói e publica as imagens de todos os targets alterados e, se

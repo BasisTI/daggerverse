@@ -11,10 +11,23 @@ import (
 // cada módulo do build tem o seu -- o do módulo-alvo e os das libs irmãs.
 const DependencyCheckReportGlob = "**/target/dependency-check-report.*"
 
+// DependencyCheckJUnitGlob casa o relatório JUnit do Dependency-Check (formato JUNIT), que não
+// segue o nome dos outros: o plugin o grava como dependency-check-junit.xml.
+const DependencyCheckJUnitGlob = "**/target/dependency-check-junit.xml"
+
+// securityReportIncludes são os filtros aplicados à árvore do build para recolher os relatórios.
+// O "**/" casa um ou mais diretórios, então o target/ da raiz montada entra à parte.
+func securityReportIncludes() []string {
+	return []string{
+		DependencyCheckReportGlob, "target/dependency-check-report.*",
+		DependencyCheckJUnitGlob, "target/dependency-check-junit.xml",
+	}
+}
+
 // SecurityScanResult é o desfecho de uma varredura: os relatórios e o código de saída do mvn.
 type SecurityScanResult struct {
 	// Relatórios do Dependency-Check, com o caminho relativo à árvore montada preservado
-	// (ex: `target/dependency-check-report.html`, ou `<módulo>/target/...` num reactor).
+	// (ex: `target/dependency-check-report.html`, `target/dependency-check-junit.xml`, ou `<módulo>/target/...` num reactor).
 	Reports *dagger.Directory
 	// Código de saída do `mvn verify`. Zero é sucesso.
 	ExitCode int
@@ -61,6 +74,6 @@ func (m *Maven) SecurityScan(ctx context.Context,
 		root = fmt.Sprintf("%s/%s", BaseWorkdir, moduleDir)
 	}
 	reports := dag.Directory().WithDirectory("/", ctr.Directory(root),
-		dagger.DirectoryWithDirectoryOpts{Include: []string{DependencyCheckReportGlob, "target/dependency-check-report.*"}})
+		dagger.DirectoryWithDirectoryOpts{Include: securityReportIncludes()})
 	return &SecurityScanResult{Reports: reports, ExitCode: exitCode}, nil
 }

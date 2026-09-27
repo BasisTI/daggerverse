@@ -194,14 +194,17 @@ func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger
 const SecurityProfile = "security-check"
 
 // SecurityReportFormats são os formatos pedidos ao Dependency-Check: HTML para gente ler no
-// artefato do job, JSON para máquina.
+// artefato do job, JSON para máquina e JUNIT para a aba Tests da pipeline do GitLab, que no CE
+// é o único lugar da interface onde o resultado aparece sem MR (a varredura nasce de
+// agendamento). O JUnit traz uma dependência por suíte e cada vulnerabilidade como falha; com
+// junitFailOnCVSS no default (0), qualquer CVE conta.
 //
 // Vai por -Dformats porque o plugin (13.x) liga o parâmetro `formats` à property de mesmo
 // nome, e `formats`, quando preenchido, prevalece sobre `format` -- que é o que os poms
 // costumam declarar, ou nem declarar (default HTML). O limite: configuração explícita no pom
 // vence property de linha de comando, então um pom que declare `<formats>` fica com os
 // formatos dele e o -D é ignorado. Nesse caso o artefato traz só o que o pom pede.
-const SecurityReportFormats = "HTML,JSON"
+const SecurityReportFormats = "HTML,JSON,JUNIT"
 
 // securityScan roda a varredura de um target e devolve os relatórios e o código de saída do mvn.
 type securityScan func(ctx context.Context, source *dagger.Directory) (*dagger.Directory, int, error)
