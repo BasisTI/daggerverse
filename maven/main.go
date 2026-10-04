@@ -124,7 +124,7 @@ func (m *Maven) FullBuild(ctx context.Context,
 		}
 	}
 
-	buildResult, err := m.executeStages(ctx, source, module, moduleDir, rootMounted, stages, gitlabClient, commitSha)
+	buildResult, err := m.executeStages(ctx, source, module, moduleDir, rootMounted, nil, stages, gitlabClient, commitSha)
 	if err != nil {
 		return nil, err
 	}
@@ -256,11 +256,16 @@ func (m *Maven) executeStages(
 	module string,
 	moduleDir string,
 	rootMounted bool,
+	reusedTarget *dagger.Directory,
 	stages []PipelineStage,
 	gitlabClient *gitlabci.Client,
 	commitSha string,
 ) (*ModuleBuildResult, error) {
 	stageContainer := m.mountSource(source, moduleDir, rootMounted)
+	if reusedTarget != nil {
+		// mountSource deixa o target/ de fora; aqui ele volta, com o que um build anterior produziu.
+		stageContainer = stageContainer.WithDirectory(fmt.Sprintf("%s/%s/target", BaseWorkdir, moduleDir), reusedTarget)
+	}
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
 		statusName := ""

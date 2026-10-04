@@ -33,3 +33,20 @@ one. Two details are load-bearing and easy to get wrong if this is ever reimplem
 
 The storage volume uses `PRIVATE` sharing, so concurrent builds do not corrupt each other's
 daemon. The tradeoff is that images are pulled fresh on each run.
+
+## Analysing without rebuilding (`analysis-inputs`, `analyze-from-reports`)
+
+`full-build` runs `clean verify`, the Sonar analysis and the Jib publish in one go. The `develop`
+branch pipeline already runs the tests in the publish job, and running them again for the analysis
+doubled its time, so the analysis can be split from the build:
+
+- `analysis-inputs` takes the `artifacts` of `full-build` (the module's `target/`) and keeps only
+  what the Sonar scanner reads: `classes`, `test-classes`, `generated-sources`, the surefire and
+  failsafe XML reports and the JaCoCo XML/exec files. The jar and the rest stay out.
+- `analyze-from-reports` mounts the source, puts that directory back at `<module>/target` and runs
+  only `sonar:sonar`. The scanner goal resolves the dependency classpath by itself, so nothing is
+  compiled and no test runs. In reactor mode a `-DskipTests install` stage puts the sibling modules
+  in `~/.m2` first, because the analysis runs as `-f <module>/pom.xml`.
+
+A normal `full-build` already ran the scanner as a second Maven invocation over the `target/` of the
+first one; the split changes where that `target/` comes from, not what the scanner sees.

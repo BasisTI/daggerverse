@@ -63,7 +63,7 @@ dagger call -m github.com/BasisTI/daggerverse/orchestrator@3.6.0 \
   validate
 ----
 
-=== The six functions
+=== The functions
 
 ==== validate
 
@@ -106,6 +106,33 @@ Detects the targets changed between `--base-branch` and the current commit, buil
 If `--git-remote-url` is given, it bumps the version files of the published targets and commits back to `--git-branch` (defaults to `develop`). It also fails if there are custom targets.
 
 With the GitLab parameters set, the published images are posted as a comment on the merge request the commit came from — no need to open the job and hunt for the refs in the log. See <<mrnotes>>.
+
+==== publish-all-with-reports
+
+`publish-all` plus the inputs of the branch analysis. It takes the same parameters, does the same work (build, publish, `sha-<commit>` tag, version bump) and returns a *directory* instead of a string:
+
+----
+published.txt   the published images, one per line (what publish-all returns)
+<target>/       one per Maven target with `sonar = true` that was built: target/classes,
+                target/test-classes, the surefire and failsafe XML reports, the JaCoCo XML
+                and the generated sources, at the paths they have in the module's target/
+----
+
+It exists so that the `develop` branch analysis does not run the same `mvn clean verify` the publish has just run. The directory is meant to be exported (`... publish-all-with-reports ... export --path .sonar-reuse`) and handed to `check-quality-from-reports`. The jar/war and the rest of `target/` are left out: they are most of the size, and the analysis does not read them. Targets that are not Maven, or have no `sonar = true`, contribute nothing.
+
+It is a separate function, not a flag of `publish-all`, because the return type differs. `publish-all` is unchanged, so a project pinned to an older CI template keeps working.
+
+==== check-quality-from-reports
+
+The branch-analysis counterpart of `check-quality`: for each changed target with `sonar = true`, if `--reports` (the directory `publish-all-with-reports` returned) has the target, it runs only `sonar:sonar` over it -- no `clean verify`, no tests. The test counts and coverage Sonar records are the ones from the publish build.
+
+It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--sonar-branch` (required: this is a branch analysis), the optional `--reports`, `--stop-on-first-fail` and `--nvd-api-key`. The quality gate is still awaited (`sonar.qualitygate.wait=true`).
+
+Targets without reports -- npm and uv, or Maven the publish did not build -- fall back to the full `check-quality` path, and the log says which targets took which path. Without `--reports` every target takes the full path. Skipping them instead would leave the branch silently unanalysed.
+
+Why it needs no compilation: the `sonar-maven-plugin` goal resolves the module's dependencies itself, and takes `sonar.java.binaries` / `sonar.java.test.binaries` from the restored `target/classes` and `target/test-classes`. The JUnit reports and the JaCoCo XML come back at the same relative paths, so the defaults (and whatever the pom sets) keep applying. In a Maven reactor the sibling modules must be in `~/.m2`; a `-DskipTests install` stage guarantees that, and is cheap when the build cache is on the same engine.
+
+It is not for merge requests, where `check-quality` stays a single job.
 
 ==== check-images
 
@@ -532,7 +559,7 @@ Generic, type-safe orchestration. It uses generics to abstract over the Dagger S
 * *`BuildStrategy[Dir, Secret]`* / *`QualityStrategy[Dir, Secret]`* — the signatures any module implements to plug into the orchestration.
 * *`DaggerOps[Dir, Secret]`* — callbacks isolating the SDK-specific operations (change detection, directory access, image tagging).
 * *`PublishAll`* — detects the changed projects, runs their build strategies in sequence, aggregates the published images and tags them with `sha-<commit>`.
-* *`CheckQuality`* — runs tests and static analysis on the changed projects, with optional fail-fast.
+* *`CheckQuality`* — runs tests and static analysis on the changed projects, with optional fail-fast. The orchestrator's `check-quality-from-reports` reuses the build of `publish-all-with-reports` instead of running the tests again; the library is unchanged, the reuse lives in the per-target quality strategy.
 
 ==== `pipeline/config`
 
