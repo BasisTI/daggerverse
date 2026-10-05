@@ -56,13 +56,31 @@ if [ -s "$KEEP" ]; then
 fi
 `
 
+// analysisVerifyOK é a última linha que analysisVerifyScript imprime quando a verificação terminou.
+// Sem ela, a verificação não terminou, e o resultado é um problema, nunca um "está tudo bem".
+const analysisVerifyOK = "VERIFICACAO-CONCLUIDA"
+
 // analysisVerifyScript confere o diretório recebido contra o AnalysisChecksumFile: arquivo alterado,
-// truncado ou perdido, e relatório XML vazio. Imprime o que está errado e nada quando está tudo bem.
-const analysisVerifyScript = `IN="${IN:-/in}"; cd "$IN"
+// truncado ou perdido, e relatório XML vazio. Imprime o que está errado e, ao fim, analysisVerifyOK.
+//
+// Falha fechado: antes de começar confere que as ferramentas existem, e só imprime o marcador final
+// se chegou ao fim. Um `grep` ausente já fez a verificação inteira passar em branco (o erro ia para o
+// stderr e o stdout ficava vazio); agora a ausência de ferramenta, ou qualquer saída antes da hora,
+// vira um motivo explícito e o target roda o check completo.
+const analysisVerifyScript = `IN="${IN:-/in}"
+for tool in sha256sum find grep head sed; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "ferramenta ausente na imagem: $tool"; exit 0; }
+done
+cd "$IN" || { echo "diretório de relatórios inacessível"; exit 0; }
 if [ ! -f ` + AnalysisChecksumFile + ` ]; then echo "sem ` + AnalysisChecksumFile + `"; exit 0; fi
-sha256sum -c ` + AnalysisChecksumFile + ` 2>&1 | grep -v ': OK$' | head -n 20 || true
-find . -type f -name '*.xml' -size 0 | head -n 20 | sed 's/$/: relatório XML vazio/' || true
-exit 0
+sums="$(sha256sum -c ` + AnalysisChecksumFile + ` 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ]; then
+  bad="$(printf '%s\n' "$sums" | grep -v ': OK$' | head -n 20)"
+  [ -n "$bad" ] || bad="sha256sum terminou com código $rc sem detalhar"
+  printf '%s\n' "$bad"
+fi
+find . -type f -name '*.xml' -size 0 | head -n 20 | sed 's/$/: relatório XML vazio/'
+echo ` + analysisVerifyOK + `
 `
 
 // AnalysisInputs recorta de um módulo construído o que a análise do Sonar precisa.
@@ -100,7 +118,18 @@ func (m *Maven) AnalysisInputsProblem(ctx context.Context,
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+	// Sem o marcador final a verificação não terminou (ferramenta ausente, saída antecipada): é um
+	// problema, e o motivo é o que o script disse, ou a falta dele.
+	out = strings.TrimSpace(out)
+	rest, finished := strings.CutSuffix(out, analysisVerifyOK)
+	rest = strings.TrimSpace(rest)
+	if !finished {
+		if rest == "" {
+			rest = "a verificação não terminou"
+		}
+		return rest, nil
+	}
+	return rest, nil
 }
 
 // reusePrepOptions são as opções do estágio que recoloca no repositório local as dependências

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -164,7 +165,7 @@ func TestAnalysisVerify(t *testing.T) {
 	}
 	t.Run("íntegro", func(t *testing.T) {
 		out := mk(t)
-		if got := strings.TrimSpace(runScript(t, analysisVerifyScript, out, "")); got != "" {
+		if got := strings.TrimSpace(runScript(t, analysisVerifyScript, out, "")); got != analysisVerifyOK {
 			t.Errorf("recusou um export íntegro: %s", got)
 		}
 	})
@@ -190,7 +191,7 @@ func TestAnalysisVerify(t *testing.T) {
 			if err := mutate(out); err != nil {
 				t.Fatal(err)
 			}
-			if got := strings.TrimSpace(runScript(t, analysisVerifyScript, out, "")); got == "" {
+			if got := strings.TrimSpace(runScript(t, analysisVerifyScript, out, "")); got == analysisVerifyOK {
 				t.Error("aceitou o diretório adulterado")
 			}
 		})
@@ -219,5 +220,58 @@ func TestReusePrepOptions(t *testing.T) {
 	}
 	if strings.Contains(joined, "-Drevision") {
 		t.Errorf("a análise não reescreve a versão: %v", got)
+	}
+}
+
+// pathWithout monta um diretório com atalhos para todas as ferramentas do PATH atual menos as
+// indicadas, para simular uma imagem que não as tem.
+func pathWithout(t *testing.T, missing ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if slices.Contains(missing, e.Name()) {
+				continue
+			}
+			link := filepath.Join(dir, e.Name())
+			if _, err := os.Lstat(link); err == nil {
+				continue
+			}
+			_ = os.Symlink(filepath.Join(p, e.Name()), link)
+		}
+	}
+	return dir
+}
+
+// A verificação falha fechado: sem uma ferramenta que ela usa, o resultado é um motivo explícito e
+// nunca o marcador de conclusão. Antes, sem `grep`, o diretório adulterado passava em branco.
+func TestAnalysisVerifyFailsClosedWithoutTools(t *testing.T) {
+	in, out := t.TempDir(), t.TempDir()
+	writeTree(t, in, filterFixture)
+	runScript(t, analysisFilterScript, in, out)
+	// Adultera uma classe: com as ferramentas, a verificação a recusa.
+	if err := os.WriteFile(filepath.Join(out, "target/classes/demo/Calc.class"), []byte("outro"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"grep", "sha256sum", "find", "head", "sed"} {
+		t.Run("sem "+tool, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "-c", analysisVerifyScript)
+			cmd.Env = []string{"IN=" + out, "PATH=" + pathWithout(t, tool)}
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("script falhou: %v\n%s", err, output)
+			}
+			got := strings.TrimSpace(string(output))
+			if strings.Contains(got, analysisVerifyOK) {
+				t.Errorf("declarou a verificação concluída sem %s: %q", tool, got)
+			}
+			if !strings.Contains(got, "ferramenta ausente na imagem: "+tool) {
+				t.Errorf("motivo = %q, quer citar %s", got, tool)
+			}
+		})
 	}
 }

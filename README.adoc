@@ -161,6 +161,17 @@ Why it needs no compilation: the `sonar-maven-plugin` goal resolves the module's
 
 It is not for merge requests, where `check-quality` stays a single job.
 
+[[reuse-limits]]
+==== Known limits of the build reuse
+
+Accepted on 2026-10-05 after triage against the real environment; none is fixed on purpose.
+
+* *An XML comment that mentions `testsuite` exports the file.* The root element is found by its first start tag in the first 1 KB, and a comment that quotes the tag can make a non-report XML look like one. `publish-develop` and `sonar-branch-develop` run in the same pipeline, in a closed environment, and a secret passing between those two jobs is not a risk worth chasing. The content-based selection and `expire_in: 1 day` stay.
+* *A JaCoCo report with a long prologue is not exported.* The filter reads the first 1 KB to find the JaCoCo DOCTYPE. `jacoco-maven-plugin` writes no comment before it, so it only happens with a hand-made XML, which none of our projects has. Coverage would be missing for that target.
+* *Reports of other tools are not carried.* Checkstyle, PMD and SpotBugs reports, `sonar.externalIssuesReportPaths` and the like are not exported, and neither is `lcov`. None of our consumers' poms hands those to Sonar (Ábaco, the one that had `lcov`, no longer runs Sonar). A project that needs them sets `SONAR_REUSE_BUILD: "false"` in the CI template.
+
+The checksum verification is *not* a known limit: it fails closed. If a tool it needs (`sha256sum`, `find`, `grep`, `head`, `sed`) is missing from the Maven image, or it does not reach its final marker, the result is an explicit reason and the target runs the full check.
+
 ==== check-images
 
 Checks that every image derived from the configuration already exists in the registry, before promotion. Runs on merge requests targeting `main`, using `--build-branch` (defaults to `origin/develop`) to locate the commit the images were built from.
