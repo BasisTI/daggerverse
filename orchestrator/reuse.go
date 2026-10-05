@@ -14,6 +14,9 @@ import (
 // imagens publicadas, uma por linha -- o mesmo texto que publish-all devolve.
 const PublishedFile = "published.txt"
 
+// ChecksumName é o arquivo com o sha256 do que foi exportado, gravado por maven.AnalysisInputs.
+const ChecksumName = "sonar-reuse.sha256"
+
 // reportsExcludeDir é o diretório onde o job de publish exporta o que a análise reaproveita.
 // Fica dentro do checkout, porque o GitLab só guarda como artefato o que está no workspace, e por
 // isso precisa ficar de fora do que sobe ao engine: não é código do projeto.
@@ -97,8 +100,9 @@ func reusableTargets(ctx context.Context, reports *dagger.Directory) (map[string
 // o motivo de não poder reaproveitar, ou "" quando pode.
 type reuseValidator func(ctx context.Context, target string) string
 
-// manifestValidator lê o manifesto do target no diretório de relatórios e recontra o inventário.
-func manifestValidator(reports *dagger.Directory, commitSha string) reuseValidator {
+// manifestValidator lê o manifesto do target no diretório de relatórios, recontra o inventário e
+// confere o checksum de cada arquivo (relatório truncado, vazio ou trocado).
+func manifestValidator(cfg *config.Config, reports *dagger.Directory, commitSha string, nvdApiKey *dagger.Secret) reuseValidator {
 	return func(ctx context.Context, target string) string {
 		dir := reports.Directory(target)
 		raw, err := dir.File(ManifestName).Contents(ctx)
@@ -113,7 +117,21 @@ func manifestValidator(reports *dagger.Directory, commitSha string) reuseValidat
 		if err != nil {
 			return fmt.Sprintf("não foi possível listar os relatórios: %v", err)
 		}
-		return reuseProblem(manifest, target, commitSha, inventoryFromPaths(paths))
+		if problem := reuseProblem(manifest, target, commitSha, inventoryFromPaths(paths)); problem != "" {
+			return problem
+		}
+		rt, err := cfg.Resolve(target)
+		if err != nil {
+			return err.Error()
+		}
+		problem, err := dag.Maven(mavenOpts(rt, nvdApiKey)).AnalysisInputsProblem(ctx, dir.WithoutFile(ManifestName))
+		if err != nil {
+			return fmt.Sprintf("não foi possível conferir os checksums: %v", err)
+		}
+		if problem != "" {
+			return "checksum não confere com o do publish: " + strings.ReplaceAll(problem, "\n", "; ")
+		}
+		return ""
 	}
 }
 
@@ -157,7 +175,7 @@ func withReusedReports(
 			fallback = append(fallback, fallbackTarget{name, reason})
 			continue
 		}
-		target.Check = checkMavenFromReports(rt, sonarExtra, nvdApiKey, reports.Directory(name).WithoutFile(ManifestName))
+		target.Check = checkMavenFromReports(rt, sonarExtra, nvdApiKey, reports.Directory(name).WithoutFile(ManifestName).WithoutFile(ChecksumName))
 		targets[name] = target
 		reused = append(reused, name)
 	}

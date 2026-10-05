@@ -40,11 +40,16 @@ daemon. The tradeoff is that images are pulled fresh on each run.
 branch pipeline already runs the tests in the publish job, and running them again for the analysis
 doubled its time, so the analysis can be split from the build:
 
-- `analysis-inputs` takes the `tree` of `full-build` (the module directory after the build) and keeps
-  the `target/` of the module and of every child module, by exclusion: jars, archives, HTML and
-  assets, logs, filtered resources and key material stay out, and only the `*.class` files of
-  `classes/` and `test-classes/` stay in. Reports written to custom directories by the pom are kept at
-  the paths they have.
+- `analysis-inputs` takes the `tree` of `full-build` (the module directory after the build) and keeps,
+  inside every `target/` of the module and of each child module, only what the scanner reads,
+  recognised by content: `*.class`, XML with root `testsuite`/`testsuites`, JaCoCo XML (root `report`
+  with the JaCoCo DOCTYPE) and `jacoco*.exec`, and generated `*.java`/`*.kt`. Reports written to custom
+  directories by the pom are kept at the paths they have; filtered resources, configuration and
+  anything else the build left in `target/` are not exported, whatever their name. It also writes
+  `sonar-reuse.sha256`. It runs a small `sh` script in a container of the Maven image (Debian/Ubuntu
+  and Alpine both work).
+- `analysis-inputs-problem` re-checks a directory against that checksum file and returns what is
+  wrong (empty means intact).
 - `analyze-from-reports` mounts the source, puts that directory back on the module tree and runs only
   `sonar:sonar`. The scanner goal resolves the dependency classpath by itself, so nothing is compiled
   and no test runs. In reactor mode a `-DskipTests install` stage puts the sibling modules in `~/.m2`

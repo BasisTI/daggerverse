@@ -120,11 +120,24 @@ published.txt   the published images, one per line (what publish-all returns)
 
 It exists so that the `develop` branch analysis does not run the same `mvn clean verify` the publish has just run. The directory is meant to be exported (`... publish-all-with-reports ... export --path .sonar-reuse`) and handed to `check-quality-from-reports`.
 
-*What is exported.* The whole `target/` of the target's module tree -- the aggregator and each child -- by *exclusion*, with the paths the build gave it. Surefire and JaCoCo can write anywhere (`reportsDirectory`, `outputDirectory`) and the pom can point Sonar there (`sonar.junit.reportPaths`, `sonar.coverage.jacoco.xmlReportPaths`); a fixed list of globs would drop those reports and the analysis would lose tests and coverage with a green gate. Left out: jars/wars/archives, HTML and assets of the JaCoCo report, `*.txt`/`*.log` (surefire text reports and test output), and `target/jib-*`, `node`, `maven-archiver` and the like. From `classes/` and `test-classes/` only `*.class` is kept.
+*What is exported.* Inside every `target/` of the target's module tree -- the aggregator and each child -- only what the Sonar scanner reads, recognised by its *content*, wherever the build wrote it:
 
-*What is deliberately not exported.* Filtered resources (`*.properties`, `*.yml`, `*.yaml`, `*.env`) and key/certificate material (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.crt`) can carry secrets after Maven resource filtering, and the Sonar scanner does not read them, so they never leave the build. What remains and cannot be removed is the content of the XML test reports (`system-out`, `system-err`, JVM properties). It is the same text the job log already carries, in an artifact that expires in a day; a project whose tests print secrets must stop printing them, or opt out with `SONAR_REUSE_BUILD: "false"` in the template.
+* `*.class` (the bytecode: `sonar.java.binaries` and `sonar.java.test.binaries`);
+* XML whose root element is `testsuite` or `testsuites` (test reports, wherever the pom sent surefire/failsafe);
+* XML whose root is `report` and that declares the JaCoCo DOCTYPE, and `jacoco*.exec` (coverage);
+* `*.java` / `*.kt` under `generated-sources` and `generated-test-sources`.
+
+Nothing else travels. Surefire and JaCoCo can write anywhere (`reportsDirectory`, `outputDirectory`) and the pom can point Sonar there, so selecting by path would drop those reports and the analysis would lose tests and coverage with a green gate. Selecting by content keeps them without taking arbitrary configuration along.
+
+*Why by content and not by exclusion.* The first version excluded extensions (`*.properties`, `*.yml`, `*.env`, keys...), and the review showed it leaks: anything the pom writes under `target/` is a candidate, and a list of what can hold a secret is never complete -- `generated-resources/auth.xml`, `.env.production`, `token.json` and `settings.xml` got through. By content, an `auth.xml` has root `auth` and stays out whatever its name or directory; an XML named `TEST-*.xml` or `jacoco*.xml` with another root stays out too. What the scanner does not read does not leave the build.
+
+*Residual risk, accepted.* The XML test reports are read by the scanner, so their content (`system-out`, `system-err`, JVM properties) still travels. The text also reaches the job log, but masking applied to the GitLab trace does not sanitise artifact files. The artifact expires in a day. A project whose tests print secrets must stop printing them, or opt out with `SONAR_REUSE_BUILD: "false"` in the template. Also: reports of other tools (SpotBugs, Checkstyle, PMD) that a pom points Sonar at are not carried, so a project that feeds them to Sonar loses them in the reuse path; such a project should opt out.
+
+*Checksums.* `sonar-reuse.sha256` lists the sha256 of every exported file. The analysis re-checks it, so a report that arrives truncated, empty, swapped or missing falls back to the full path with the reason in the log (the manifest counts alone would not see an emptied report that kept its name).
 
 *The manifest.* Written at publish time and validated by the analysis (see below): schema, target, commit SHA and, per module (path relative to the target's module, `.` for the module itself), the counts of compiled classes, test classes, test reports (`TEST-*.xml`), JaCoCo XML and JaCoCo exec files. Counting, and not mere presence, is what separates a project with no tests (zeros on both sides) from reports lost in transport (counts that no longer match).
+
+*Trust boundary.* The manifest and the checksum file travel in the artifact itself, so they do not authenticate where the artifact came from: whoever can rewrite the artifact can rewrite `commitSha` and the hashes together and pass the same set off as another commit. The guarantee is narrower and sufficient for the pipeline: the artifact comes from the `publish-develop` job of the *same* pipeline (`needs` with `artifacts: true`), so the commit it declares is the commit it was built from; the manifest and the checksums then catch what actually goes wrong -- another revision's reports, partial transport, truncated files. Per-file hashes are worth their cost for that (a few seconds, one extra container run) and are already in; they would not be worth more than that, because defending against a forger needs a signature with a key the analysis job trusts and the publish job holds, which this setup does not have. Do not feed the function a directory from an untrusted source.
 
 It is a separate function, not a flag of `publish-all`, because the return type differs. `publish-all` is unchanged, so a project pinned to an older CI template keeps working.
 
@@ -140,6 +153,7 @@ It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--so
 . The manifest commit is `--commit-sha`. Reports of another revision would hide the current code's failures.
 . The inventory counted again over what arrived equals the manifest's, module by module. A lost `surefire-reports` or JaCoCo file, a lost child module or an unknown extra module is a mismatch.
 . The build is coherent: no module has test classes and zero test reports, and something was compiled.
+. Every exported file matches its sha256 (`sonar-reuse.sha256`), and no XML report is empty.
 
 Other targets -- npm and uv, or Maven the publish did not build -- also take the full path, and the log says which targets took which path and why. Without `--reports` every target takes the full path. Skipping them instead would leave the branch silently unanalysed.
 

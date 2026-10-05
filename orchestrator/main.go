@@ -237,7 +237,7 @@ func (o *Orchestrator) CheckQualityFromReports(
 	}
 	var validate reuseValidator
 	if reports != nil {
-		validate = manifestValidator(reports, commitSha)
+		validate = manifestValidator(cfg, reports, commitSha, nvdApiKey)
 	}
 	reused, fallback, err := withReusedReports(ctx, cfg, targets, available, reports, validate, sonarExtra, nvdApiKey)
 	if err != nil {

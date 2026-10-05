@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"dagger/maven/internal/dagger"
@@ -106,6 +107,7 @@ func TestEngineAggregateKeepsChildModules(t *testing.T) {
 		"child/target/test-classes/demo/CalcTest.class",
 		"child/target/surefire-reports/TEST-demo.CalcTest.xml",
 		"child/target/site/jacoco/jacoco.xml",
+		AnalysisChecksumFile,
 	}, []string{
 		"target/classes/version.txt",
 		"child/target/child-1.0.jar",
@@ -122,8 +124,111 @@ func TestEngineCustomReportPaths(t *testing.T) {
 		"target/test-classes/demo/CalcTest.class",
 		"target/tests/TEST-demo.CalcTest.xml",
 		"target/coverage/jacoco.xml",
+		AnalysisChecksumFile,
 	}, []string{
 		"target/classes/application.properties",
 		"target/custompaths-1.0.jar",
 	})
+}
+
+// secretsSource: o caso do revisor. Recursos filtrados e arquivos de configuração com o valor de um
+// segredo do ambiente do build, gravados em target/ fora de classes/.
+func secretsSource() *dagger.Directory {
+	echo := func(file, content string) string {
+		return `<echo file="${project.build.directory}/` + file + `">` + content + `</echo>`
+	}
+	pom := `<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>secrets</artifactId><version>1.0</version><properties><maven.compiler.release>21</maven.compiler.release></properties>` + junitDep + `<build><plugins><plugin><artifactId>maven-antrun-plugin</artifactId><version>3.1.0</version><executions><execution><phase>generate-resources</phase><goals><goal>run</goal></goals><configuration><target><mkdir dir="${project.build.directory}/generated-resources"/>` +
+		echo("generated-resources/auth.xml", "&lt;auth&gt;&lt;password&gt;"+secretSentinel+"&lt;/password&gt;&lt;/auth&gt;") +
+		echo("generated-resources/.env.production", "NVD_API_KEY="+secretSentinel) +
+		echo("token.json", `{"token":"`+secretSentinel+`"}`) +
+		echo("settings.xml", "&lt;settings&gt;"+secretSentinel+"&lt;/settings&gt;") +
+		echo(".env.production", "NVD_API_KEY="+secretSentinel) +
+		`</target></configuration></execution></executions></plugin>` + sprintfJacoco("") + `</plugins></build></project>`
+	return dag.Directory().WithNewFile("pom.xml", pom).
+		WithNewFile("src/main/java/demo/Calc.java", calcMain).
+		WithNewFile("src/test/java/demo/CalcTest.java", calcTest)
+}
+
+func assertNoSentinel(t *testing.T, dir *dagger.Directory) {
+	t.Helper()
+	ctx := context.Background()
+	paths, err := dir.Glob(ctx, "**/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := 0
+	for _, p := range paths {
+		if strings.HasSuffix(p, "/") {
+			continue
+		}
+		files++
+		if strings.HasSuffix(p, ".class") || strings.HasSuffix(p, ".exec") {
+			continue
+		}
+		content, err := dir.File(p).Contents(ctx)
+		if err != nil {
+			t.Fatalf("ler %s: %v", p, err)
+		}
+		if strings.Contains(content, secretSentinel) {
+			t.Errorf("o export leva o segredo em %s", p)
+		}
+	}
+	if files == 0 {
+		t.Fatal("export vazio: o teste não provou nada")
+	}
+}
+
+// O build grava o sentinela em vários arquivos de target/; nenhum arquivo do export pode tê-lo.
+func TestEngineFilteredSecretsStayOut(t *testing.T) {
+	engineTest(t)
+	ctx := context.Background()
+	m := New(mavenFixtureImage, false, true, true, nil, false, false, false, "", nil)
+	built, err := m.FullBuild(ctx, secretsSource(), "secrets", "", "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("FullBuild: %v", err)
+	}
+	// Contraprova: o build de fato gravou o segredo em target/ (senão o teste não prova nada).
+	if raw, err := built.Tree.File("target/generated-resources/.env.production").Contents(ctx); err != nil || !strings.Contains(raw, secretSentinel) {
+		t.Fatalf("o fixture não gravou o sentinela em target/: %v", err)
+	}
+	inputs := m.AnalysisInputs(built.Tree)
+	assertNoSentinel(t, inputs)
+	paths, _ := inputs.Glob(ctx, "**/*")
+	assertPaths(t, paths, []string{"target/classes/demo/Calc.class", "target/surefire-reports/TEST-demo.CalcTest.xml", "target/site/jacoco/jacoco.xml"},
+		[]string{"target/generated-resources/auth.xml", "target/generated-resources/.env.production", "target/token.json", "target/settings.xml", "target/.env.production"})
+}
+
+// O filtro roda nas duas famílias de imagem do Maven: Debian/Ubuntu (coreutils) e Alpine (busybox).
+func TestEngineFilterOnBothImageFamilies(t *testing.T) {
+	engineTest(t)
+	ctx := context.Background()
+	for _, image := range []string{mavenFixtureImage, mavenFixtureImage + "-alpine"} {
+		t.Run(image, func(t *testing.T) {
+			m := New(image, false, true, true, nil, false, false, false, "", nil)
+			tree := dag.Directory()
+			for p, content := range filterFixture {
+				tree = tree.WithNewFile(p, content)
+			}
+			inputs := m.AnalysisInputs(tree)
+			paths, err := inputs.Glob(ctx, "**/*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertPaths(t, paths, append(append([]string{}, filterKept...), AnalysisChecksumFile),
+				[]string{"target/generated-resources/auth.xml", "target/token.json", "target/TEST-enganoso.xml", "target/app-1.0.jar"})
+			assertNoSentinel(t, inputs)
+
+			if problem, err := m.AnalysisInputsProblem(ctx, inputs); err != nil || problem != "" {
+				t.Errorf("export íntegro recusado: %q %v", problem, err)
+			}
+			truncated := inputs.WithNewFile("target/surefire-reports/TEST-demo.CalcTest.xml", "<testsuite name=\"demo")
+			if problem, err := m.AnalysisInputsProblem(ctx, truncated); err != nil || problem == "" {
+				t.Errorf("XML truncado aceito: %q %v", problem, err)
+			}
+			empty := inputs.WithNewFile("target/site/jacoco/jacoco.xml", "")
+			if problem, err := m.AnalysisInputsProblem(ctx, empty); err != nil || problem == "" {
+				t.Errorf("JaCoCo vazio aceito: %q %v", problem, err)
+			}
+		})
+	}
 }
