@@ -163,7 +163,14 @@ func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secr
 			return "", err
 		}
 		if collect != nil && collectsReports(rt) {
-			collect.add(rt.Name, m.AnalysisInputs(result.Artifacts()))
+			// Falha ao inventariar não derruba o publish: o target só não é reaproveitado, e a
+			// análise roda o check completo dele.
+			inputs, stampErr := stampInputs(ctx, m.AnalysisInputs(result.Tree()), rt.Name, commitSha)
+			if stampErr != nil {
+				fmt.Printf("⚠️  Relatórios de %s não exportados para a análise: %v\n", rt.Name, stampErr)
+			} else {
+				collect.add(rt.Name, inputs)
+			}
 		}
 		return image, nil
 	}

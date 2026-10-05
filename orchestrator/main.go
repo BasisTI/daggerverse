@@ -235,7 +235,11 @@ func (o *Orchestrator) CheckQualityFromReports(
 	if err != nil {
 		return err
 	}
-	reused, fallback, err := withReusedReports(cfg, targets, available, reports, sonarExtra, nvdApiKey)
+	var validate reuseValidator
+	if reports != nil {
+		validate = manifestValidator(reports, commitSha)
+	}
+	reused, fallback, err := withReusedReports(ctx, cfg, targets, available, reports, validate, sonarExtra, nvdApiKey)
 	if err != nil {
 		return err
 	}
@@ -243,7 +247,9 @@ func (o *Orchestrator) CheckQualityFromReports(
 		fmt.Printf("♻️  Relatórios do publish reaproveitados (sem clean verify, sem testes): %v\n", reused)
 	}
 	if len(fallback) > 0 {
-		fmt.Printf("🔁 Sem relatórios do publish, check completo: %v\n", fallback)
+		for _, f := range fallback {
+			fmt.Printf("🔁 %s: check completo (clean verify) -- %s\n", f.name, f.reason)
+		}
 	}
 	return pipeline.CheckQuality(ctx, daggerOps(nil), targets, o.Source,
 		baseBranch, commitSha, sonarHost, sonarToken, stopOnFirstFail, false)

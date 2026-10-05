@@ -32,8 +32,8 @@ func globToRegexp(glob string) *regexp.Regexp {
 	return regexp.MustCompile(sb.String())
 }
 
-func collectedByAnalysisInputs(p string) bool {
-	for _, glob := range AnalysisInputGlobs {
+func matchesAny(globs []string, p string) bool {
+	for _, glob := range globs {
 		if globToRegexp(glob).MatchString(p) {
 			return true
 		}
@@ -41,28 +41,62 @@ func collectedByAnalysisInputs(p string) bool {
 	return false
 }
 
-func TestAnalysisInputGlobs(t *testing.T) {
+// collectedByAnalysisInputs reproduz a seleção de AnalysisInputs: o que passa das inclusões e das
+// exclusões, mais o bytecode devolvido por AnalysisClassIncludes.
+func collectedByAnalysisInputs(p string) bool {
+	if matchesAny(AnalysisClassIncludes, p) {
+		return true
+	}
+	return matchesAny(AnalysisInputIncludes, p) && !matchesAny(AnalysisInputExcludes, p)
+}
+
+func TestAnalysisInputs(t *testing.T) {
 	tests := []struct {
 		path string
 		want bool
 	}{
-		{"classes/br/com/basis/App.class", true},
-		{"classes/application.yml", true},
-		{"test-classes/br/com/basis/AppTest.class", true},
-		{"generated-sources/annotations/br/com/basis/Mapper.java", true},
-		{"surefire-reports/TEST-br.com.basis.AppTest.xml", true},
-		{"failsafe-reports/TEST-br.com.basis.AppIT.xml", true},
-		{"site/jacoco/jacoco.xml", true},
-		{"site/jacoco-it/jacoco.xml", true},
-		{"jacoco.exec", true},
-		{"jacoco-it.exec", true},
-		// Fora: o grosso do tamanho, que a análise não lê.
-		{"app-1.0.0.jar", false},
-		{"surefire-reports/br.com.basis.AppTest.txt", false},
-		{"site/jacoco/index.html", false},
-		{"site/jacoco/jacoco.csv", false},
-		{"dependency-check-report.json", false},
-		{"maven-archiver/pom.properties", false},
+		// Bytecode, do módulo e dos filhos.
+		{"target/classes/br/com/basis/App.class", true},
+		{"target/test-classes/br/com/basis/AppTest.class", true},
+		{"child/target/classes/demo/Calc.class", true},
+		{"services/child/target/test-classes/demo/CalcTest.class", true},
+		// Relatórios nos caminhos padrão.
+		{"target/surefire-reports/TEST-br.com.basis.AppTest.xml", true},
+		{"target/failsafe-reports/TEST-br.com.basis.AppIT.xml", true},
+		{"target/site/jacoco/jacoco.xml", true},
+		{"target/site/jacoco-it/jacoco.xml", true},
+		{"target/jacoco.exec", true},
+		{"target/generated-sources/annotations/br/com/basis/Mapper.java", true},
+		// Relatórios em caminhos configurados no pom (surefire reportsDirectory, jacoco outputDirectory).
+		{"target/tests/TEST-demo.CalcTest.xml", true},
+		{"target/coverage/jacoco.xml", true},
+		{"child/target/tests/TEST-demo.CalcTest.xml", true},
+		{"child/target/coverage/jacoco.xml", true},
+		// Fora: tamanho e o que a análise não lê.
+		{"target/app-1.0.0.jar", false},
+		{"child/target/child-1.0.jar", false},
+		{"target/app.jar.original", false},
+		{"target/surefire-reports/br.com.basis.AppTest.txt", false},
+		{"target/surefire-reports/br.com.basis.AppTest-output.txt", false},
+		{"target/site/jacoco/index.html", false},
+		{"target/site/jacoco/jacoco-resources/prettify.js", false},
+		{"target/site/jacoco/jacoco-resources/report.gif", false},
+		{"target/site/jacoco/jacoco.csv", true},
+		{"target/maven-archiver/pom.properties", false},
+		{"target/jib-image.digest", false},
+		{"target/node/node", false},
+		{"target/dependency-check-report.json", false},
+		// Fora: recursos filtrados podem carregar segredo; só o bytecode fica em classes/.
+		{"target/classes/application.yml", false},
+		{"target/classes/application-prod.properties", false},
+		{"target/classes/static/app.js", false},
+		{"target/test-classes/application-test.yml", false},
+		{"child/target/classes/secrets.env", false},
+		{"target/tests/client.p12", false},
+		// Fora do target/ não entra nada.
+		{"src/main/java/demo/Calc.java", false},
+		{"pom.xml", false},
+		{"child/src/test/java/demo/CalcTest.java", false},
 	}
 	for _, tc := range tests {
 		if got := collectedByAnalysisInputs(tc.path); got != tc.want {

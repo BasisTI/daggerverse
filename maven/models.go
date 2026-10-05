@@ -8,7 +8,10 @@ import (
 
 // ModuleBuildResult represents the aggregated outcome of a Maven module build.
 type ModuleBuildResult struct {
-	Artifacts      *dagger.Directory
+	Artifacts *dagger.Directory
+	// Tree é o diretório do módulo no container depois do último estágio: o pom do módulo, as
+	// fontes e o target/ de cada módulo filho. É de onde AnalysisInputs recorta o que a análise lê.
+	Tree           *dagger.Directory
 	Container      *dagger.Container
 	ImageUrl       string
 	ExecutedStages []string
@@ -20,6 +23,7 @@ type ModuleBuildResult struct {
 type StageBuildResult struct {
 	Container *dagger.Container
 	Artifacts *dagger.Directory
+	Tree      *dagger.Directory
 	Stdout    string
 	Stderr    string
 }

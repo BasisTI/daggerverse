@@ -5,39 +5,70 @@ import (
 	"dagger/maven/internal/dagger"
 )
 
-// AnalysisInputGlobs são os arquivos do target/ que a análise do Sonar lê, com os caminhos
-// relativos ao target/ do módulo.
+// AnalysisInputIncludes seleciona, na árvore de um módulo, o que pode ir para a análise: todo
+// `target/`, do módulo e dos filhos. Os caminhos relativos ao módulo são preservados.
 //
-// É o que o `sonar:sonar` precisa para analisar sem refazer o build: as classes compiladas
-// (sonar.java.binaries e sonar.java.test.binaries), os relatórios de teste do surefire e do
-// failsafe, o XML do JaCoCo e as fontes geradas. O jar, o war e o resto do target/ ficam de
-// fora -- são o grosso do tamanho e a análise não os lê.
+// O "**/" casa um ou mais diretórios, então o target/ da raiz do módulo entra à parte.
+var AnalysisInputIncludes = []string{"target/**", "**/target/**"}
+
+// AnalysisInputExcludes tira do target/ o que a análise não lê e o que não deve viajar num artefato.
 //
-// Os relatórios .txt e .html do surefire também ficam de fora: o Sonar lê só o XML.
-var AnalysisInputGlobs = []string{
-	"classes/**",
-	"test-classes/**",
-	"generated-sources/**",
-	"generated-test-sources/**",
-	"surefire-reports/**/*.xml",
-	"failsafe-reports/**/*.xml",
-	"site/**/jacoco*.xml",
-	"jacoco*.exec",
-	"site/**/jacoco*.exec",
+// A seleção é por exclusão, e não por lista de arquivos conhecidos, de propósito: o pom pode mandar
+// o surefire e o JaCoCo para qualquer diretório (`reportsDirectory`, `outputDirectory`) e apontar o
+// Sonar para lá (`sonar.junit.reportPaths`, `sonar.coverage.jacoco.xmlReportPaths`). Uma lista de
+// globs fixos descartaria esses relatórios e a análise perderia testes e cobertura sem erro. O
+// que sobra depois das exclusões segue o caminho que o build lhe deu.
+//
+// Fora, por tamanho e por não serem lidos: jar, war, pacotes, HTML e demais assets do relatório do
+// JaCoCo, os .txt do surefire e logs.
+//
+// Fora, por poderem carregar segredo: recursos filtrados (`*.properties`, `*.yml`, `*.env`) e
+// material de chave e certificado. Os recursos de `classes/` e `test-classes/` saem todos aqui e os
+// `.class` voltam por AnalysisClassIncludes: o scanner só lê bytecode de lá.
+var AnalysisInputExcludes = []string{
+	"**/target/classes/**",
+	"**/target/test-classes/**",
+	"target/classes/**",
+	"target/test-classes/**",
+	"**/target/**/*.jar", "**/target/**/*.war", "**/target/**/*.ear", "**/target/**/*.zip",
+	"**/target/**/*.tar", "**/target/**/*.tar.gz", "**/target/**/*.tgz", "**/target/**/*.original",
+	"**/target/**/*.html", "**/target/**/*.css", "**/target/**/*.js", "**/target/**/*.map",
+	"**/target/**/*.png", "**/target/**/*.gif", "**/target/**/*.jpg", "**/target/**/*.svg",
+	"**/target/**/*.ico", "**/target/**/*.woff", "**/target/**/*.woff2", "**/target/**/*.ttf",
+	"**/target/**/*.txt", "**/target/**/*.log", "**/target/**/*.dump", "**/target/**/*.dumpstream",
+	"**/target/**/*.properties", "**/target/**/*.yml", "**/target/**/*.yaml", "**/target/**/*.env",
+	"**/target/**/*.pem", "**/target/**/*.key", "**/target/**/*.p12", "**/target/**/*.pfx",
+	"**/target/**/*.jks", "**/target/**/*.crt", "**/target/**/*.keystore",
+	"**/target/jib-*", "**/target/node/**", "**/target/node_modules/**", "**/target/frontend/**",
+	"**/target/maven-archiver/**", "**/target/maven-status/**", "**/target/dependency-check*",
+	"target/jib-*", "target/node/**", "target/node_modules/**", "target/frontend/**",
+	"target/maven-archiver/**", "target/maven-status/**", "target/dependency-check*",
 }
 
-// AnalysisInputs recorta de um target/ o que a análise do Sonar precisa.
+// AnalysisClassIncludes devolve ao recorte o bytecode de `classes/` e `test-classes/`
+// (sonar.java.binaries e sonar.java.test.binaries), sem os recursos que ficam ao lado dele.
+var AnalysisClassIncludes = []string{
+	"target/classes/**/*.class", "**/target/classes/**/*.class",
+	"target/test-classes/**/*.class", "**/target/test-classes/**/*.class",
+}
+
+// AnalysisInputs recorta de um módulo construído o que a análise do Sonar precisa.
 //
-// Recebe o `Artifacts` de FullBuild -- o target/ do módulo depois do build -- e devolve um
-// diretório com os mesmos caminhos relativos, pronto para ser devolvido ao target/ por
-// AnalyzeFromReports.
+// Recebe a `Tree` do resultado de FullBuild -- a árvore do módulo depois do build, com o target/
+// dele e o de cada módulo filho -- e devolve um diretório com os mesmos caminhos relativos ao
+// módulo, pronto para voltar à árvore por AnalyzeFromReports.
 func (m *Maven) AnalysisInputs(
-	// O target/ do módulo, como devolvido em `artifacts` por FullBuild.
-	target *dagger.Directory,
+	// A árvore do módulo, como devolvida em `tree` por FullBuild.
+	tree *dagger.Directory,
 ) *dagger.Directory {
-	return dag.Directory().WithDirectory("/", target, dagger.DirectoryWithDirectoryOpts{
-		Include: AnalysisInputGlobs,
+	rest := dag.Directory().WithDirectory("/", tree, dagger.DirectoryWithDirectoryOpts{
+		Include: AnalysisInputIncludes,
+		Exclude: AnalysisInputExcludes,
 	})
+	classes := dag.Directory().WithDirectory("/", tree, dagger.DirectoryWithDirectoryOpts{
+		Include: AnalysisClassIncludes,
+	})
+	return rest.WithDirectory("/", classes)
 }
 
 // reusePrepOptions são as opções do estágio que recoloca no repositório local as dependências
@@ -56,9 +87,12 @@ func reusePrepOptions(module string) []string {
 // AnalyzeFromReports roda só a análise do Sonar de um módulo, sobre o resultado de um build já feito.
 //
 // É o par de FullBuild para o job de análise de branch: o `verify` já rodou no job de publish, e
-// repeti-lo custa o tempo de todos os testes. Aqui os arquivos de AnalysisInputs voltam ao target/
-// do módulo e o Maven roda o `sonar:sonar` -- que resolve o classpath das bibliotecas sozinho
+// repeti-lo custa o tempo de todos os testes. Aqui os arquivos de AnalysisInputs voltam à árvore do
+// módulo e o Maven roda o `sonar:sonar` -- que resolve o classpath das bibliotecas sozinho
 // (o goal exige resolução de dependências) e não recompila nada.
+//
+// Quem chama é responsável por só passar inputs do mesmo commit e completos: esta função não os
+// confere. A conferência é do orchestrator, com o manifesto que o publish grava.
 //
 // Num build comum o `sonar:sonar` já era uma segunda invocação do Maven sobre o target/ deixado
 // pela primeira; o que muda é de onde vem esse target/, não o que o scanner enxerga.
@@ -69,7 +103,7 @@ func (m *Maven) AnalyzeFromReports(ctx context.Context,
 	source *dagger.Directory,
 	// Module name. In reactor mode, the module path relative to the reactor root.
 	module string,
-	// O que AnalysisInputs recortou do target/ do módulo no build.
+	// O que AnalysisInputs recortou da árvore do módulo no build.
 	reports *dagger.Directory,
 	sonarConfig *SonarConfig,
 	// Caminho do módulo relativo à raiz do repositório; mesma semântica do modulePath de FullBuild.

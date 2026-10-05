@@ -54,6 +54,25 @@ func collectsReports(rt config.ResolvedTarget) bool {
 	return rt.Sonar && rt.Type == config.TypeMaven && rt.QualityType == config.TypeMaven
 }
 
+// listFiles devolve os caminhos de tudo o que há no diretório.
+func listFiles(ctx context.Context, dir *dagger.Directory) ([]string, error) {
+	return dir.Glob(ctx, "**/*")
+}
+
+// stampInputs grava no diretório exportado do target o manifesto: o commit, o target e o inventário
+// do que o build produziu. É o que a análise confere antes de reaproveitar.
+func stampInputs(ctx context.Context, inputs *dagger.Directory, target, commitSha string) (*dagger.Directory, error) {
+	paths, err := listFiles(ctx, inputs)
+	if err != nil {
+		return nil, fmt.Errorf("inventariar os relatórios de %s: %w", target, err)
+	}
+	manifest, err := newManifest(target, commitSha, paths).marshal()
+	if err != nil {
+		return nil, err
+	}
+	return inputs.WithNewFile(ManifestName, manifest), nil
+}
+
 // reusableTargets devolve os nomes de target presentes no diretório de relatórios.
 //
 // Entries devolve os diretórios com `/` no fim.
@@ -74,30 +93,71 @@ func reusableTargets(ctx context.Context, reports *dagger.Directory) (map[string
 	return names, nil
 }
 
-// withReusedReports troca o check dos targets Maven que têm relatórios por um que só analisa.
+// reuseValidator confere o que o publish exportou para um target contra o commit analisado e devolve
+// o motivo de não poder reaproveitar, ou "" quando pode.
+type reuseValidator func(ctx context.Context, target string) string
+
+// manifestValidator lê o manifesto do target no diretório de relatórios e recontra o inventário.
+func manifestValidator(reports *dagger.Directory, commitSha string) reuseValidator {
+	return func(ctx context.Context, target string) string {
+		dir := reports.Directory(target)
+		raw, err := dir.File(ManifestName).Contents(ctx)
+		if err != nil {
+			return "sem manifesto do publish (" + ManifestName + ")"
+		}
+		manifest, err := parseManifest(raw)
+		if err != nil {
+			return err.Error()
+		}
+		paths, err := listFiles(ctx, dir)
+		if err != nil {
+			return fmt.Sprintf("não foi possível listar os relatórios: %v", err)
+		}
+		return reuseProblem(manifest, target, commitSha, inventoryFromPaths(paths))
+	}
+}
+
+// fallbackTarget é um target que roda o check completo, com o motivo.
+type fallbackTarget struct {
+	name, reason string
+}
+
+// withReusedReports troca o check dos targets Maven cujos relatórios passam na conferência por um
+// que só analisa.
 //
-// Os demais -- npm, uv, e Maven sem relatório (o publish não o construiu, ou o diretório não veio)
-// -- ficam com o check original, que roda o build inteiro. Um check de análise que passasse a
-// ignorar esses targets deixaria a branch sem análise em silêncio.
+// Os demais -- npm, uv, Maven sem relatório, e Maven cujo manifesto não confere com o commit nem com
+// o inventário -- ficam com o check original, que roda o build inteiro, e o motivo volta para o log.
+// Um check de análise que passasse a ignorar esses targets, ou que analisasse dado velho ou parcial,
+// deixaria a branch com medidas erradas sem erro nenhum.
 func withReusedReports(
+	ctx context.Context,
 	cfg *config.Config,
 	targets map[string]qualityTarget,
 	available map[string]bool,
 	reports *dagger.Directory,
+	validate reuseValidator,
 	sonarExtra []string,
 	nvdApiKey *dagger.Secret,
-) (reused, fallback []string, err error) {
+) (reused []string, fallback []fallbackTarget, err error) {
 	for _, name := range sortedKeys(targets) {
 		target := targets[name]
 		rt, resolveErr := cfg.Resolve(name)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
-		if !available[name] || !collectsReports(rt) {
-			fallback = append(fallback, name)
+		switch {
+		case !collectsReports(rt):
+			fallback = append(fallback, fallbackTarget{name, "o publish não exporta relatórios para este tipo de target"})
+			continue
+		case !available[name]:
+			fallback = append(fallback, fallbackTarget{name, "o publish não exportou este target"})
 			continue
 		}
-		target.Check = checkMavenFromReports(rt, sonarExtra, nvdApiKey, reports.Directory(name))
+		if reason := validate(ctx, name); reason != "" {
+			fallback = append(fallback, fallbackTarget{name, reason})
+			continue
+		}
+		target.Check = checkMavenFromReports(rt, sonarExtra, nvdApiKey, reports.Directory(name).WithoutFile(ManifestName))
 		targets[name] = target
 		reused = append(reused, name)
 	}

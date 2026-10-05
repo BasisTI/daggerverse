@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/BasisTI/daggerverse/pipeline/config"
@@ -58,13 +60,15 @@ func TestCollectsReports(t *testing.T) {
 
 func TestWithReusedReportsPartitionsTargets(t *testing.T) {
 	cfg := loadMixed(t)
+	ctx := context.Background()
+	accept := func(context.Context, string) string { return "" }
 
 	t.Run("com relatório do api", func(t *testing.T) {
 		targets, err := qualityTargets(cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		reused, fallback, err := withReusedReports(cfg, targets, map[string]bool{"api": true, "web": true}, dag.Directory(), nil, nil)
+		reused, fallback, err := withReusedReports(ctx, cfg, targets, map[string]bool{"api": true, "web": true}, dag.Directory(), accept, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,8 +76,8 @@ func TestWithReusedReportsPartitionsTargets(t *testing.T) {
 		if want := []string{"api"}; !reflect.DeepEqual(reused, want) {
 			t.Errorf("reaproveitados = %v, quer %v", reused, want)
 		}
-		if want := []string{"web", "worker"}; !reflect.DeepEqual(fallback, want) {
-			t.Errorf("check completo = %v, quer %v", fallback, want)
+		if got := fallbackNames(fallback); !reflect.DeepEqual(got, []string{"web", "worker"}) {
+			t.Errorf("check completo = %v, quer [web worker]", got)
 		}
 	})
 
@@ -82,17 +86,51 @@ func TestWithReusedReportsPartitionsTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reused, fallback, err := withReusedReports(cfg, targets, nil, nil, nil, nil)
+		reused, fallback, err := withReusedReports(ctx, cfg, targets, nil, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(reused) != 0 {
 			t.Errorf("reaproveitados = %v, quer nenhum", reused)
 		}
-		if want := []string{"api", "web", "worker"}; !reflect.DeepEqual(fallback, want) {
-			t.Errorf("check completo = %v, quer %v", fallback, want)
+		if got := fallbackNames(fallback); !reflect.DeepEqual(got, []string{"api", "web", "worker"}) {
+			t.Errorf("check completo = %v, quer [api web worker]", got)
 		}
 	})
+
+	// O diretório existe e o target está nele, mas a conferência recusa: vai para o check
+	// completo, com o motivo no log, e nunca é analisado com o dado recusado.
+	t.Run("conferência recusa", func(t *testing.T) {
+		targets, err := qualityTargets(cfg, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refuse := func(context.Context, string) string { return "relatórios do commit aaaa, análise do commit bbbb" }
+		reused, fallback, err := withReusedReports(ctx, cfg, targets, map[string]bool{"api": true}, dag.Directory(), refuse, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(reused) != 0 {
+			t.Errorf("reaproveitados = %v, quer nenhum", reused)
+		}
+		var apiReason string
+		for _, f := range fallback {
+			if f.name == "api" {
+				apiReason = f.reason
+			}
+		}
+		if apiReason == "" || !strings.Contains(apiReason, "commit") {
+			t.Errorf("motivo do api = %q, quer o motivo da conferência", apiReason)
+		}
+	})
+}
+
+func fallbackNames(list []fallbackTarget) []string {
+	names := make([]string, len(list))
+	for i, f := range list {
+		names[i] = f.name
+	}
+	return names
 }
 
 func TestReportCollectorKeepsFirstSeenOrder(t *testing.T) {

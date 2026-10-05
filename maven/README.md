@@ -40,13 +40,21 @@ daemon. The tradeoff is that images are pulled fresh on each run.
 branch pipeline already runs the tests in the publish job, and running them again for the analysis
 doubled its time, so the analysis can be split from the build:
 
-- `analysis-inputs` takes the `artifacts` of `full-build` (the module's `target/`) and keeps only
-  what the Sonar scanner reads: `classes`, `test-classes`, `generated-sources`, the surefire and
-  failsafe XML reports and the JaCoCo XML/exec files. The jar and the rest stay out.
-- `analyze-from-reports` mounts the source, puts that directory back at `<module>/target` and runs
-  only `sonar:sonar`. The scanner goal resolves the dependency classpath by itself, so nothing is
-  compiled and no test runs. In reactor mode a `-DskipTests install` stage puts the sibling modules
-  in `~/.m2` first, because the analysis runs as `-f <module>/pom.xml`.
+- `analysis-inputs` takes the `tree` of `full-build` (the module directory after the build) and keeps
+  the `target/` of the module and of every child module, by exclusion: jars, archives, HTML and
+  assets, logs, filtered resources and key material stay out, and only the `*.class` files of
+  `classes/` and `test-classes/` stay in. Reports written to custom directories by the pom are kept at
+  the paths they have.
+- `analyze-from-reports` mounts the source, puts that directory back on the module tree and runs only
+  `sonar:sonar`. The scanner goal resolves the dependency classpath by itself, so nothing is compiled
+  and no test runs. In reactor mode a `-DskipTests install` stage puts the sibling modules in `~/.m2`
+  first, because the analysis runs as `-f <module>/pom.xml`.
+
+`analyze-from-reports` does not check what it is given. The caller must only pass inputs of the same
+commit and complete; the orchestrator does that with a manifest (see the root README).
 
 A normal `full-build` already ran the scanner as a second Maven invocation over the `target/` of the
 first one; the split changes where that `target/` comes from, not what the scanner sees.
+
+Tests against a real build (aggregator with a child module, reports in custom paths) need the Dagger
+engine and the network: `TG278_ENGINE_TESTS=1 dagger run go test -run TestEngine ./...`.
