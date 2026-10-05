@@ -18,13 +18,13 @@ type qualityTarget = pipeline.QualityTarget[*dagger.Directory, *dagger.Secret]
 //
 // Targets custom não têm estratégia e são rejeitados antes daqui, por
 // errCustomTargets.
-func buildTargets(cfg *config.Config, nvdApiKey *dagger.Secret) (map[string]buildTarget, error) {
+func buildTargets(cfg *config.Config, nvdApiKey *dagger.Secret, collect *reportCollector) (map[string]buildTarget, error) {
 	targets := make(map[string]buildTarget, len(cfg.Targets))
 	for _, rt := range cfg.ResolveAll() {
 		if rt.Type == config.TypeCustom {
 			continue
 		}
-		build, err := buildStrategy(rt, cfg.Project.Group, nvdApiKey)
+		build, err := buildStrategy(rt, cfg.Project.Group, nvdApiKey, collect)
 		if err != nil {
 			return nil, err
 		}

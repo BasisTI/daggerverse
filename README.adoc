@@ -63,7 +63,7 @@ dagger call -m github.com/BasisTI/daggerverse/orchestrator@3.6.0 \
   validate
 ----
 
-=== The six functions
+=== The functions
 
 ==== validate
 
@@ -106,6 +106,71 @@ Detects the targets changed between `--base-branch` and the current commit, buil
 If `--git-remote-url` is given, it bumps the version files of the published targets and commits back to `--git-branch` (defaults to `develop`). It also fails if there are custom targets.
 
 With the GitLab parameters set, the published images are posted as a comment on the merge request the commit came from — no need to open the job and hunt for the refs in the log. See <<mrnotes>>.
+
+==== publish-all-with-reports
+
+`publish-all` plus the inputs of the branch analysis. It takes the same parameters, does the same work (build, publish, `sha-<commit>` tag, version bump) and returns a *directory* instead of a string:
+
+----
+published.txt   the published images, one per line (what publish-all returns)
+<target>/       one per Maven target with `sonar = true` that was built:
+                  sonar-reuse-manifest.json   commit, target and an inventory of what follows
+                  <module>/target/...         the target/ of the module and of every child module
+----
+
+It exists so that the `develop` branch analysis does not run the same `mvn clean verify` the publish has just run. The directory is meant to be exported (`... publish-all-with-reports ... export --path .sonar-reuse`) and handed to `check-quality-from-reports`.
+
+*What is exported.* Inside every `target/` of the target's module tree -- the aggregator and each child -- only what the Sonar scanner reads, recognised by its *content*, wherever the build wrote it:
+
+* `*.class` (the bytecode: `sonar.java.binaries` and `sonar.java.test.binaries`);
+* XML whose root element is `testsuite` or `testsuites` (test reports, wherever the pom sent surefire/failsafe);
+* XML whose root is `report` and that declares the JaCoCo DOCTYPE, and `jacoco*.exec` (coverage);
+* `*.java` / `*.kt` under `generated-sources` and `generated-test-sources`.
+
+Nothing else travels. Surefire and JaCoCo can write anywhere (`reportsDirectory`, `outputDirectory`) and the pom can point Sonar there, so selecting by path would drop those reports and the analysis would lose tests and coverage with a green gate. Selecting by content keeps them without taking arbitrary configuration along.
+
+*Why by content and not by exclusion.* The first version excluded extensions (`*.properties`, `*.yml`, `*.env`, keys...), and the review showed it leaks: anything the pom writes under `target/` is a candidate, and a list of what can hold a secret is never complete -- `generated-resources/auth.xml`, `.env.production`, `token.json` and `settings.xml` got through. By content, an `auth.xml` has root `auth` and stays out whatever its name or directory; an XML named `TEST-*.xml` or `jacoco*.xml` with another root stays out too. What the scanner does not read does not leave the build.
+
+*Residual risk, accepted.* The XML test reports are read by the scanner, so their content (`system-out`, `system-err`, JVM properties) still travels. The text also reaches the job log, but masking applied to the GitLab trace does not sanitise artifact files. The artifact expires in a day. A project whose tests print secrets must stop printing them, or opt out with `SONAR_REUSE_BUILD: "false"` in the template. Also: reports of other tools (SpotBugs, Checkstyle, PMD) that a pom points Sonar at are not carried, so a project that feeds them to Sonar loses them in the reuse path; such a project should opt out.
+
+*Checksums.* `sonar-reuse.sha256` lists the sha256 of every exported file. The analysis re-checks it, so a report that arrives truncated, empty, swapped or missing falls back to the full path with the reason in the log (the manifest counts alone would not see an emptied report that kept its name).
+
+*The manifest.* Written at publish time and validated by the analysis (see below): schema, target, commit SHA and, per module (path relative to the target's module, `.` for the module itself), the counts of compiled classes, test classes, test reports (`TEST-*.xml`), JaCoCo XML and JaCoCo exec files. Counting, and not mere presence, is what separates a project with no tests (zeros on both sides) from reports lost in transport (counts that no longer match).
+
+*Trust boundary.* The manifest and the checksum file travel in the artifact itself, so they do not authenticate where the artifact came from: whoever can rewrite the artifact can rewrite `commitSha` and the hashes together and pass the same set off as another commit. The guarantee is narrower and sufficient for the pipeline: the artifact comes from the `publish-develop` job of the *same* pipeline (`needs` with `artifacts: true`), so the commit it declares is the commit it was built from; the manifest and the checksums then catch what actually goes wrong -- another revision's reports, partial transport, truncated files. Per-file hashes are worth their cost for that (a few seconds, one extra container run) and are already in; they would not be worth more than that, because defending against a forger needs a signature with a key the analysis job trusts and the publish job holds, which this setup does not have. Do not feed the function a directory from an untrusted source.
+
+It is a separate function, not a flag of `publish-all`, because the return type differs. `publish-all` is unchanged, so a project pinned to an older CI template keeps working.
+
+==== check-quality-from-reports
+
+The branch-analysis counterpart of `check-quality`: for each changed target with `sonar = true`, if `--reports` (the directory `publish-all-with-reports` returned) has the target *and the target passes the checks below*, it runs only `sonar:sonar` over it -- no `clean verify`, no tests. The test counts and coverage Sonar records are the ones from the publish build.
+
+It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--sonar-branch` (required: this is a branch analysis), the optional `--reports`, `--stop-on-first-fail` and `--nvd-api-key`. The quality gate is still awaited (`sonar.qualitygate.wait=true`).
+
+*Checks, per target, before reusing.* Any failure sends that target to the full path (the same as `check-quality`) and logs the reason; the analysis never runs on stale or partial data.
+
+. The manifest exists, has the known schema and is for this target.
+. The manifest commit is `--commit-sha`. Reports of another revision would hide the current code's failures.
+. The inventory counted again over what arrived equals the manifest's, module by module. A lost `surefire-reports` or JaCoCo file, a lost child module or an unknown extra module is a mismatch.
+. The build is coherent: no module has test classes and zero test reports, and something was compiled.
+. Every exported file matches its sha256 (`sonar-reuse.sha256`), and no XML report is empty.
+
+Other targets -- npm and uv, or Maven the publish did not build -- also take the full path, and the log says which targets took which path and why. Without `--reports` every target takes the full path. Skipping them instead would leave the branch silently unanalysed.
+
+Why it needs no compilation: the `sonar-maven-plugin` goal resolves the module's dependencies itself, and takes `sonar.java.binaries` / `sonar.java.test.binaries` from the restored `target/classes` and `target/test-classes` of each module. The JUnit reports and the JaCoCo XML come back at the same relative paths, so the pom's properties keep applying. In a Maven reactor the sibling modules must be in `~/.m2`; a `-DskipTests install` stage guarantees that, and is cheap when the build cache is on the same engine.
+
+It is not for merge requests, where `check-quality` stays a single job.
+
+[[reuse-limits]]
+==== Known limits of the build reuse
+
+Accepted on 2026-10-05 after triage against the real environment; none is fixed on purpose.
+
+* *An XML comment that mentions `testsuite` exports the file.* The root element is found by its first start tag in the first 1 KB, and a comment that quotes the tag can make a non-report XML look like one. `publish-develop` and `sonar-branch-develop` run in the same pipeline, in a closed environment, and a secret passing between those two jobs is not a risk worth chasing. The content-based selection and `expire_in: 1 day` stay.
+* *A JaCoCo report with a long prologue is not exported.* The filter reads the first 1 KB to find the JaCoCo DOCTYPE. `jacoco-maven-plugin` writes no comment before it, so it only happens with a hand-made XML, which none of our projects has. Coverage would be missing for that target.
+* *Reports of other tools are not carried.* Checkstyle, PMD and SpotBugs reports, `sonar.externalIssuesReportPaths` and the like are not exported, and neither is `lcov`. None of our consumers' poms hands those to Sonar (Ábaco, the one that had `lcov`, no longer runs Sonar). A project that needs them sets `SONAR_REUSE_BUILD: "false"` in the CI template.
+
+The checksum verification is *not* a known limit: it fails closed. If a tool it needs (`sha256sum`, `find`, `grep`, `head`, `sed`) is missing from the Maven image, or it does not reach its final marker, the result is an explicit reason and the target runs the full check.
 
 ==== check-images
 
@@ -532,7 +597,7 @@ Generic, type-safe orchestration. It uses generics to abstract over the Dagger S
 * *`BuildStrategy[Dir, Secret]`* / *`QualityStrategy[Dir, Secret]`* — the signatures any module implements to plug into the orchestration.
 * *`DaggerOps[Dir, Secret]`* — callbacks isolating the SDK-specific operations (change detection, directory access, image tagging).
 * *`PublishAll`* — detects the changed projects, runs their build strategies in sequence, aggregates the published images and tags them with `sha-<commit>`.
-* *`CheckQuality`* — runs tests and static analysis on the changed projects, with optional fail-fast.
+* *`CheckQuality`* — runs tests and static analysis on the changed projects, with optional fail-fast. The orchestrator's `check-quality-from-reports` reuses the build of `publish-all-with-reports` instead of running the tests again; the library is unchanged, the reuse lives in the per-target quality strategy.
 
 ==== `pipeline/config`
 

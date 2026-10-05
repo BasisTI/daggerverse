@@ -34,7 +34,7 @@ func TestBuildTargetsCoversEveryNonCustomTarget(t *testing.T) {
 	for _, fixture := range allFixtures {
 		t.Run(fixture, func(t *testing.T) {
 			cfg := loadTestdata(t, fixture)
-			targets, err := buildTargets(cfg, nil)
+			targets, err := buildTargets(cfg, nil, nil)
 			if err != nil {
 				t.Fatalf("buildTargets: %v", err)
 			}
@@ -114,7 +114,7 @@ func TestBuildTargetMapping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.fixture+"/"+tc.target, func(t *testing.T) {
 			cfg := loadTestdata(t, tc.fixture)
-			targets, err := buildTargets(cfg, nil)
+			targets, err := buildTargets(cfg, nil, nil)
 			if err != nil {
 				t.Fatalf("buildTargets: %v", err)
 			}
@@ -150,7 +150,7 @@ func TestBuildTargetMapping(t *testing.T) {
 // módulo, não o nome do target.
 func TestReactorMountsRepoRootWithModulePath(t *testing.T) {
 	cfg := loadTestdata(t, "triagem")
-	targets, err := buildTargets(cfg, nil)
+	targets, err := buildTargets(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("buildTargets: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestReactorMountsRepoRootWithModulePath(t *testing.T) {
 // dois targets reactor bumpam o mesmo pom.xml de raiz.
 func TestReactorTargetsShareOneVersionFile(t *testing.T) {
 	cfg := loadTestdata(t, "triagem")
-	targets, err := buildTargets(cfg, nil)
+	targets, err := buildTargets(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("buildTargets: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestDerivedImagesMatchTargets(t *testing.T) {
 
 			// Todo target buildável aponta para o mesmo path de change detection
 			// que sua imagem no mapa derivado.
-			targets, err := buildTargets(cfg, nil)
+			targets, err := buildTargets(cfg, nil, nil)
 			if err != nil {
 				t.Fatalf("buildTargets: %v", err)
 			}

@@ -74,10 +74,10 @@ func branchOptions(branch string) []string {
 // buildStrategy escolhe a estratégia de publish do target. As estratégias fecham
 // sobre o ResolvedTarget: a lib pipeline não carrega mais nenhum campo de
 // configuração opaco.
-func buildStrategy(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secret) (pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret], error) {
+func buildStrategy(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secret, collect *reportCollector) (pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret], error) {
 	switch rt.Type {
 	case config.TypeMaven:
-		return publishMaven(rt, group, nvdApiKey), nil
+		return publishMaven(rt, group, nvdApiKey, collect), nil
 	case config.TypeNpm:
 		return publishNpm(rt, group), nil
 	case config.TypeUv:
@@ -139,11 +139,13 @@ func mavenOpts(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) dagger.MavenO
 // como faziam os orchestrators por projeto.
 func mavenSource(source *dagger.Directory) *dagger.Directory {
 	return dag.Directory().WithDirectory("/", source, dagger.DirectoryWithDirectoryOpts{
-		Exclude: []string{"target/", "**/target/"},
+		Exclude: []string{"target/", "**/target/", reportsExcludeDir},
 	})
 }
 
-func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secret) pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret] {
+// publishMaven publica a imagem do target. Com collect, guarda também o que a análise do Sonar
+// reaproveita do target/ do build; sem ele (publish-all) o comportamento é o de sempre.
+func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secret, collect *reportCollector) pipeline.BuildStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, commitSha, version, registry, registryUser string,
@@ -156,7 +158,21 @@ func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secr
 		dockerConfig := m.NewDockerBuildConfig(imageref.Ref(registry, group, rt.Image, version), "", registryUser, registryPassword)
 		result := m.FullBuild(mavenSource(source), mavenModule(rt, module), commitSha, version,
 			dagger.MavenFullBuildOpts{DockerConfig: dockerConfig})
-		return result.ImageURL(ctx)
+		image, err := result.ImageURL(ctx)
+		if err != nil {
+			return "", err
+		}
+		if collect != nil && collectsReports(rt) {
+			// Falha ao inventariar não derruba o publish: o target só não é reaproveitado, e a
+			// análise roda o check completo dele.
+			inputs, stampErr := stampInputs(ctx, m.AnalysisInputs(result.Tree()), rt.Name, commitSha)
+			if stampErr != nil {
+				fmt.Printf("⚠️  Relatórios de %s não exportados para a análise: %v\n", rt.Name, stampErr)
+			} else {
+				collect.add(rt.Name, inputs)
+			}
+		}
+		return image, nil
 	}
 }
 
@@ -178,6 +194,24 @@ func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger
 				SonarConfig: sonarConfig,
 				ModulePath:  qualityModulePath(rt, sourcePath),
 			})
+		_, err := result.ImageURL(ctx)
+		return err
+	}
+}
+
+// checkMavenFromReports analisa o target sobre o target/ que o publish deixou, sem `verify` nem testes.
+//
+// A configuração do Sonar é a de checkMaven; muda só quem prepara o target/.
+func checkMavenFromReports(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret, reports *dagger.Directory) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+	return func(
+		ctx context.Context, source *dagger.Directory,
+		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
+	) error {
+		m := dag.Maven(mavenOpts(rt, nvdApiKey))
+		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, sonarExtra,
+			dagger.MavenNewSonarConfigOpts{ProjectKey: rt.SonarProjectKey})
+		result := m.AnalyzeFromReports(mavenSource(source), mavenModule(rt, module), reports, sonarConfig,
+			dagger.MavenAnalyzeFromReportsOpts{ModulePath: qualityModulePath(rt, sourcePath)})
 		_, err := result.ImageURL(ctx)
 		return err
 	}

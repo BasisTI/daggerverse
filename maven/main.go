@@ -124,7 +124,7 @@ func (m *Maven) FullBuild(ctx context.Context,
 		}
 	}
 
-	buildResult, err := m.executeStages(ctx, source, module, moduleDir, rootMounted, stages, gitlabClient, commitSha)
+	buildResult, err := m.executeStages(ctx, source, module, moduleDir, rootMounted, nil, stages, gitlabClient, commitSha)
 	if err != nil {
 		return nil, err
 	}
@@ -256,11 +256,17 @@ func (m *Maven) executeStages(
 	module string,
 	moduleDir string,
 	rootMounted bool,
+	reusedTree *dagger.Directory,
 	stages []PipelineStage,
 	gitlabClient *gitlabci.Client,
 	commitSha string,
 ) (*ModuleBuildResult, error) {
 	stageContainer := m.mountSource(source, moduleDir, rootMounted)
+	if reusedTree != nil {
+		// mountSource deixa os target/ de fora; aqui eles voltam, com o que um build anterior produziu,
+		// nos mesmos caminhos relativos ao módulo -- o do agregador e o de cada filho.
+		stageContainer = stageContainer.WithDirectory(fmt.Sprintf("%s/%s", BaseWorkdir, moduleDir), reusedTree)
+	}
 	result := &ModuleBuildResult{}
 	for _, stage := range stages {
 		statusName := ""
@@ -284,6 +290,7 @@ func (m *Maven) executeStages(
 		result.Stderr = append(result.Stderr, buildResultStage.Stderr)
 		result.ExecutedStages = append(result.ExecutedStages, stage.DisplayName)
 		result.Artifacts = buildResultStage.Artifacts
+		result.Tree = buildResultStage.Tree
 	}
 	return result, nil
 }
@@ -309,6 +316,7 @@ func (m *Maven) executeStage(
 	return &StageBuildResult{
 		Container: stageContainer,
 		Artifacts: artifactsDir,
+		Tree:      stageContainer.Directory(fmt.Sprintf("%s/%s", BaseWorkdir, moduleDir)),
 		Stdout:    stdout,
 		Stderr:    stderr,
 	}, nil

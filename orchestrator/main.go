@@ -179,6 +179,82 @@ func (o *Orchestrator) CheckQuality(
 		baseBranch, commitSha, sonarHost, sonarToken, stopOnFirstFail, allTargets)
 }
 
+// CheckQualityFromReports é o check-quality da análise de branch que reaproveita o build do publish.
+//
+// Para cada target alterado com `sonar = true`: se o diretório de relatórios (o que
+// publish-all-with-reports devolveu) traz o target, roda só o `sonar:sonar` sobre ele -- sem
+// `clean verify` e sem testes, e com o resultado dos testes e a cobertura do build original. Se
+// não traz -- target npm ou uv, ou Maven que o publish não construiu --, roda o check completo de
+// sempre. Sem o diretório, todos os targets seguem o caminho completo e a função é o
+// check-quality com `--sonar-branch`.
+//
+// Não serve à merge request: lá o job é único e roda o build e a análise juntos. O quality gate
+// continua sendo esperado (`sonar.qualitygate.wait=true`) nos dois caminhos.
+func (o *Orchestrator) CheckQualityFromReports(
+	ctx context.Context,
+	// Branch base para comparar as mudanças (ex: o commit anterior do push).
+	baseBranch string,
+	// Digest do commit atual (sha completo).
+	commitSha string,
+	// URL do SonarQube.
+	sonarHost string,
+	// Token de autenticação do SonarQube.
+	sonarToken *dagger.Secret,
+	// Branch do SonarQube onde gravar a análise (ex: "develop").
+	sonarBranch string,
+	// O diretório devolvido por publish-all-with-reports. Opcional: sem ele, nada é reaproveitado.
+	// +optional
+	reports *dagger.Directory,
+	// Se true, para no primeiro target que falhar.
+	// +default=false
+	stopOnFirstFail bool,
+	// Chave da API do NVD, usada só pelos targets que caem no check completo.
+	// +optional
+	nvdApiKey *dagger.Secret,
+) error {
+	cfg, err := o.loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := errCustomTargets(cfg, "check-quality-from-reports"); err != nil {
+		return err
+	}
+	sonarExtra, err := analysisOptions(sonarBranch, "", "", "")
+	if err != nil {
+		return err
+	}
+	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		fmt.Println("✅ Nenhum target com sonar = true. Nada a verificar.")
+		return nil
+	}
+	available, err := reusableTargets(ctx, reports)
+	if err != nil {
+		return err
+	}
+	var validate reuseValidator
+	if reports != nil {
+		validate = manifestValidator(cfg, reports, commitSha, nvdApiKey)
+	}
+	reused, fallback, err := withReusedReports(ctx, cfg, targets, available, reports, validate, sonarExtra, nvdApiKey)
+	if err != nil {
+		return err
+	}
+	if len(reused) > 0 {
+		fmt.Printf("♻️  Relatórios do publish reaproveitados (sem clean verify, sem testes): %v\n", reused)
+	}
+	if len(fallback) > 0 {
+		for _, f := range fallback {
+			fmt.Printf("🔁 %s: check completo (clean verify) -- %s\n", f.name, f.reason)
+		}
+	}
+	return pipeline.CheckQuality(ctx, daggerOps(nil), targets, o.Source,
+		baseBranch, commitSha, sonarHost, sonarToken, stopOnFirstFail, false)
+}
+
 // analysisOptions decide o modo da análise e devolve as opções `-Dsonar.*` correspondentes,
 // anunciando no log qual modo foi escolhido.
 //
@@ -354,6 +430,96 @@ func (o *Orchestrator) PublishAll(
 	// +optional
 	nvdApiKey *dagger.Secret,
 ) (string, error) {
+	return o.publishAll(ctx, nil, publishArgs{
+		baseBranch: baseBranch, commitSha: commitSha, version: version,
+		registry: registry, registryUser: registryUser, registryPassword: registryPassword,
+		gitlabHost: gitlabHost, gitlabToken: gitlabToken, gitlabProjectId: gitlabProjectId, gitlabRef: gitlabRef,
+		gitRemoteUrl: gitRemoteUrl, gitBranch: gitBranch, nvdApiKey: nvdApiKey,
+	})
+}
+
+// PublishAllWithReports faz o mesmo que PublishAll e devolve, além das imagens, o que a análise do
+// Sonar reaproveita do build.
+//
+// Existe para o job de análise de branch da develop não repetir o `mvn clean verify` que o publish
+// acabou de rodar. O diretório devolvido tem:
+//
+//	published.txt   as imagens publicadas, uma por linha (o que PublishAll devolve)
+//	<target>/       um por target Maven com sonar = true que foi construído: classes, test-classes,
+//	                relatórios do surefire e do failsafe, XML do JaCoCo e fontes geradas, com os
+//	                caminhos que têm no target/ do módulo
+//
+// O consumidor é check-quality-from-reports. É função à parte, e não um parâmetro de PublishAll,
+// porque o tipo de retorno muda -- e projeto fixado numa versão antiga do template continua
+// chamando PublishAll como sempre.
+//
+// A publicação e o bump de versão acontecem dentro da função, antes de o diretório ser devolvido:
+// exportá-lo depois não repete nenhum efeito.
+func (o *Orchestrator) PublishAllWithReports(
+	ctx context.Context,
+	// Branch base para comparar as mudanças (ex: "origin/develop").
+	baseBranch string,
+	// Digest do commit atual (sha completo).
+	commitSha string,
+	// Versão da aplicação no formato CalVer.
+	version string,
+	// Registry Docker para onde as imagens serão publicadas.
+	registry string,
+	// Nome de usuário para autenticação no registry.
+	registryUser string,
+	// Senha do usuário para autenticação no registry.
+	registryPassword *dagger.Secret,
+	// URL base do GitLab (ex: CI_SERVER_URL). Se vazio, commit statuses não são reportados.
+	// +optional
+	gitlabHost string,
+	// Token com scope `api` para autenticação no GitLab.
+	// +optional
+	gitlabToken *dagger.Secret,
+	// ID numérico do projeto no GitLab (ex: CI_PROJECT_ID).
+	// +optional
+	gitlabProjectId string,
+	// Branch da pipeline que está reportando (ex: CI_COMMIT_REF_NAME).
+	// +optional
+	gitlabRef string,
+	// URL do repositório Git com credenciais para push das versões bumpadas.
+	// Se vazio, o bump de versão não é commitado.
+	// +optional
+	gitRemoteUrl string,
+	// Branch Git para push das versões bumpadas.
+	// +optional
+	// +default="develop"
+	gitBranch string,
+	// Chave da API do NVD, exportada como NVD_API_KEY no container de build.
+	// +optional
+	nvdApiKey *dagger.Secret,
+) (*dagger.Directory, error) {
+	collect := newReportCollector()
+	published, err := o.publishAll(ctx, collect, publishArgs{
+		baseBranch: baseBranch, commitSha: commitSha, version: version,
+		registry: registry, registryUser: registryUser, registryPassword: registryPassword,
+		gitlabHost: gitlabHost, gitlabToken: gitlabToken, gitlabProjectId: gitlabProjectId, gitlabRef: gitlabRef,
+		gitRemoteUrl: gitRemoteUrl, gitBranch: gitBranch, nvdApiKey: nvdApiKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return collect.directory(published), nil
+}
+
+// publishArgs agrupa os parâmetros compartilhados por PublishAll e PublishAllWithReports.
+type publishArgs struct {
+	baseBranch, commitSha, version         string
+	registry, registryUser                 string
+	registryPassword                       *dagger.Secret
+	gitlabHost, gitlabProjectId, gitlabRef string
+	gitlabToken                            *dagger.Secret
+	gitRemoteUrl, gitBranch                string
+	nvdApiKey                              *dagger.Secret
+}
+
+// publishAll é o corpo de PublishAll. Com collect não-nil, os builds Maven registram nele o que a
+// análise reaproveita.
+func (o *Orchestrator) publishAll(ctx context.Context, collect *reportCollector, a publishArgs) (string, error) {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
 		return "", err
@@ -361,32 +527,32 @@ func (o *Orchestrator) PublishAll(
 	if err := errCustomTargets(cfg, "publish-all"); err != nil {
 		return "", err
 	}
-	targets, err := buildTargets(cfg, nvdApiKey)
+	targets, err := buildTargets(cfg, a.nvdApiKey, collect)
 	if err != nil {
 		return "", err
 	}
-	glClient, err := newGitLabClient(ctx, gitlabHost, gitlabToken, gitlabProjectId, gitlabRef)
+	glClient, err := newGitLabClient(ctx, a.gitlabHost, a.gitlabToken, a.gitlabProjectId, a.gitlabRef)
 	if err != nil {
 		return "", err
 	}
 
 	result, err := pipeline.PublishAll(ctx, daggerOps(glClient), targets, o.Source,
-		baseBranch, commitSha, version, registry, registryUser, registryPassword)
+		a.baseBranch, a.commitSha, a.version, a.registry, a.registryUser, a.registryPassword)
 	if err != nil {
 		return "", err
 	}
 
 	// O relatório vem antes do bump: o bump reescreve os arquivos de versão e empurra um commit
 	// novo, e é o commitSha de entrada que localiza a MR de origem.
-	glClient.ReportPublishedImages(commitSha, result.Published, version)
+	glClient.ReportPublishedImages(a.commitSha, result.Published, a.version)
 
 	// Commit e push das versões bumpadas de volta ao repositório. A supressão do
 	// pipeline vem do push option `-o ci.skip` dentro do orchestrator-utils, e
 	// não de um prefixo "[skip ci]" na mensagem.
-	if result.Published != "" && gitRemoteUrl != "" && len(result.VersionFiles) > 0 {
-		commitMsg := fmt.Sprintf("Bump versão para %s", version)
+	if result.Published != "" && a.gitRemoteUrl != "" && len(result.VersionFiles) > 0 {
+		commitMsg := fmt.Sprintf("Bump versão para %s", a.version)
 		if err := dag.OrchestratorUtils().BumpAndCommitVersions(
-			ctx, o.Source, result.VersionFiles, version, commitMsg, gitBranch, gitRemoteUrl,
+			ctx, o.Source, result.VersionFiles, a.version, commitMsg, a.gitBranch, a.gitRemoteUrl,
 		); err != nil {
 			return "", fmt.Errorf("falha ao commitar as versões bumpadas: %w", err)
 		}
