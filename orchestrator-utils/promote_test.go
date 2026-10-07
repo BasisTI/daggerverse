@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -91,6 +92,109 @@ func TestPromoteReturnsPromotedRefs(t *testing.T) {
 	if !accumulatesIdent(promote.Body, "dstImageRef") {
 		t.Error("Promote deveria acumular dstImageRef na lista devolvida")
 	}
+}
+
+// TestPromoteAuthenticatesVersionLabelRead trava a correção do job 23151: o
+// `From` que lê o label de versão é resolvido pelo engine, que não enxerga o
+// `crane auth login`. Sem `WithRegistryAuth` com as credenciais que o Promote
+// recebe, a leitura dependia do login do host ou do cache do engine, e falhou
+// com `no basic auth credentials`.
+func TestPromoteAuthenticatesVersionLabelRead(t *testing.T) {
+	auth := registryAuthBeforeFrom(parseFunc(t, "Promote").Body, "srcImageRef")
+	if auth == nil {
+		t.Fatal("Promote deveria chamar WithRegistryAuth antes do From(srcImageRef)")
+	}
+
+	want := []string{"srcRegistry", "registryUser", "registryPass"}
+	for i, name := range want {
+		if i >= len(auth.Args) {
+			t.Fatalf("WithRegistryAuth deveria receber %v", want)
+		}
+		if ident, ok := auth.Args[i].(*ast.Ident); !ok || ident.Name != name {
+			t.Errorf("o argumento %d de WithRegistryAuth deveria ser %s", i, name)
+		}
+	}
+}
+
+// TestPrivateImagesPullWithRegistryAuth varre o módulo: todo `From` cuja imagem
+// não é um literal vem de um registry do projeto, portanto privado, e precisa
+// de credencial. As imagens públicas (alpine/git, crane) são literais.
+func TestPrivateImagesPullWithRegistryAuth(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", source, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !isMethod(call, "From") || len(call.Args) != 1 {
+			return true
+		}
+		if _, literal := call.Args[0].(*ast.BasicLit); literal {
+			return true
+		}
+		if !chainHas(call.Fun.(*ast.SelectorExpr).X, "WithRegistryAuth") {
+			t.Errorf("From(%s) sem WithRegistryAuth antes", exprString(call.Args[0]))
+		}
+		return true
+	})
+}
+
+// registryAuthBeforeFrom devolve a chamada WithRegistryAuth da cadeia que
+// termina em From(ref), ou nil.
+func registryAuthBeforeFrom(body *ast.BlockStmt, ref string) *ast.CallExpr {
+	var auth *ast.CallExpr
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !isMethod(call, "From") || len(call.Args) != 1 {
+			return auth == nil
+		}
+		if ident, ok := call.Args[0].(*ast.Ident); !ok || ident.Name != ref {
+			return true
+		}
+		auth = findInChain(call.Fun.(*ast.SelectorExpr).X, "WithRegistryAuth")
+		return false
+	})
+	return auth
+}
+
+func isMethod(call *ast.CallExpr, name string) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == name
+}
+
+// findInChain percorre a cadeia de chamadas encadeadas (a.B().C()) em direção à
+// raiz e devolve a primeira chamada ao método pedido.
+func findInChain(expr ast.Expr, name string) *ast.CallExpr {
+	for {
+		call, ok := expr.(*ast.CallExpr)
+		if !ok {
+			return nil
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return nil
+		}
+		if selector.Sel.Name == name {
+			return call
+		}
+		expr = selector.X
+	}
+}
+
+func chainHas(expr ast.Expr, name string) bool {
+	return findInChain(expr, name) != nil
+}
+
+func exprString(expr ast.Expr) string {
+	if ident, ok := expr.(*ast.Ident); ok {
+		return ident.Name
+	}
+	return fmt.Sprintf("%T", expr)
 }
 
 func numResults(results *ast.FieldList) int {
