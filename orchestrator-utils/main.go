@@ -705,7 +705,15 @@ func (u *OrchestratorUtils) Promote(
 		// job terminava verde sem ter promovido nada: uma imagem faltante ficava
 		// indistinguível de uma promoção bem-sucedida, e o serviço permanecia em
 		// produção na versão anterior sem nenhum sinal.
-		originalVersion, err := dag.Container().From(srcImageRef).Label(ctx, "org.opencontainers.image.version")
+		//
+		// O `From` é o engine resolvendo a imagem, não o crane: o `crane auth login`
+		// acima não vale para ele. Sem a credencial explícita o engine recorre ao que
+		// tiver à mão (cache de uma resolução anterior, login do host), e a mesma
+		// imagem que resolveu de manhã falhou à tarde com `no basic auth credentials`.
+		originalVersion, err := dag.Container().
+			WithRegistryAuth(srcRegistry, registryUser, registryPass).
+			From(srcImageRef).
+			Label(ctx, "org.opencontainers.image.version")
 		if err != nil {
 			return "", fmt.Errorf("falha ao ler o label de versão de %s: %w — a imagem existe? verifique a pipeline de develop", srcImageRef, err)
 		}

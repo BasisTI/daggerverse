@@ -184,6 +184,8 @@ Promotes the images derived from the configuration from `--src-registry` to `--d
 
 Every promotion walks *all* of the project's images, not only the ones that changed — that is how an old image keeps its `production-` tag present. But the copy only happens when it changes something: before copying, the source tag's digest is compared with the production tag's, and if they match the image is skipped with `⏭️  Já promovida`. Services untouched for months stop generating registry traffic on every merge to `main`, and the log shows at a glance what actually went into the promotion.
 
+The version comes from the source image's `org.opencontainers.image.version` label, read by the engine with `--registry-user`/`--registry-password` on `--src-registry`. The `crane` login does not cover that read: without the explicit credential the engine fell back to whatever it had (a cached resolution, the host's login), and the same image that resolved in the morning failed in the afternoon with `no basic auth credentials`.
+
 [[schema]]
 == The `ci/pipeline.toml` schema
 
