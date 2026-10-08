@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -24,6 +25,19 @@ var validQualityTypes = map[TargetType]bool{
 	TypeUv:    true,
 }
 
+var validVersionTypes = map[string]bool{
+	"plain": true,
+}
+
+func isStructuredVersionFile(filename string) bool {
+	switch path.Base(filename) {
+	case VersionFileMaven, VersionFileNpm, VersionFileUv:
+		return true
+	default:
+		return false
+	}
+}
+
 // Validate checa as invariantes do schema v1.
 //
 // Regras:
@@ -35,6 +49,9 @@ var validQualityTypes = map[TargetType]bool{
 //   - sonar = true exige um tipo efetivo de quality com build system (ver EffectiveQualityType);
 //   - sonar-project-key exige sonar = true, e as chaves efetivas devem ser únicas;
 //   - reactor = true exige module não vazio;
+//   - version-type, quando presente, precisa ser "plain" e exige version-file explícito;
+//   - pom.xml, package.json e pyproject.toml inferem o formato e rejeitam version-type;
+//   - outros nomes de version-file exigem version-type = "plain";
 //   - os nomes de imagem efetivos devem ser únicos entre os targets.
 func (c *Config) Validate() error {
 	var errs []string
@@ -109,6 +126,31 @@ func (c *Config) Validate() error {
 
 		if t.Reactor && strings.TrimSpace(t.Module) == "" {
 			errs = append(errs, fmt.Sprintf("target %q: reactor = true exige module não vazio", name))
+		}
+
+		versionFile := strings.TrimSpace(t.VersionFile)
+		if t.VersionType != "" {
+			if !validVersionTypes[t.VersionType] {
+				errs = append(errs, fmt.Sprintf(
+					"target %q: version-type %q inválido (válido: plain)", name, t.VersionType))
+			}
+			if versionFile == "" {
+				errs = append(errs, fmt.Sprintf(
+					"target %q: version-type exige version-file explícito", name))
+			}
+		}
+		if versionFile != "" {
+			if isStructuredVersionFile(versionFile) {
+				if t.VersionType != "" {
+					errs = append(errs, fmt.Sprintf(
+						"target %q: version-type não é permitido para %s; o formato é inferido pelo nome do arquivo",
+						name, path.Base(versionFile)))
+				}
+			} else if t.VersionType == "" {
+				errs = append(errs, fmt.Sprintf(
+					"target %q: version-file %q exige version-type = \"plain\"",
+					name, versionFile))
+			}
 		}
 
 		img := c.EffectiveImage(name)

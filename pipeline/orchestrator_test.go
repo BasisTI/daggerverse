@@ -138,6 +138,22 @@ func TestPublishAllDeduplicatesVersionFiles(t *testing.T) {
 	if !reflect.DeepEqual(res.VersionFiles, want) {
 		t.Errorf("VersionFiles = %v, quer %v", res.VersionFiles, want)
 	}
+	if want := []string{"", ""}; !reflect.DeepEqual(res.VersionFileTypes, want) {
+		t.Errorf("VersionFileTypes = %v, quer %v", res.VersionFileTypes, want)
+	}
+}
+
+func TestPublishAllCarriesPlainVersionFileType(t *testing.T) {
+	f := &fakeOps{changed: []string{"app"}}
+	res := publish(t, f, map[string]BuildTarget[string, string]{
+		"app": {Build: f.buildStrategy(), VersionFile: "VERSION-BASIS", VersionType: "plain"},
+	})
+	if want := []string{"app/VERSION-BASIS"}; !reflect.DeepEqual(res.VersionFiles, want) {
+		t.Errorf("VersionFiles = %v, quer %v", res.VersionFiles, want)
+	}
+	if want := []string{"plain"}; !reflect.DeepEqual(res.VersionFileTypes, want) {
+		t.Errorf("VersionFileTypes = %v, quer %v", res.VersionFileTypes, want)
+	}
 }
 
 func TestPublishAllMountPathSemantics(t *testing.T) {

@@ -33,6 +33,7 @@ func buildTargets(cfg *config.Config, nvdApiKey *dagger.Secret, collect *reportC
 			Path:              rt.Path,
 			MountPath:         rt.SourcePath,
 			VersionFile:       rt.VersionFile,
+			VersionType:       rt.VersionType,
 			RootVersionFile:   rt.RootVersionFile,
 			ExtraTriggerPaths: rt.ExtraTriggerPaths,
 		}

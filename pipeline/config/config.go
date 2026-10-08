@@ -106,6 +106,10 @@ type Target struct {
 	Image string `toml:"image"`
 	// VersionFile é o arquivo de versão. Default por tipo (ver EffectiveVersionFile).
 	VersionFile string `toml:"version-file"`
+	// VersionType define como VersionFile é atualizado. Vazio preserva a inferência
+	// histórica pelo nome do arquivo; "plain" substitui todo o conteúdo pelo valor
+	// da versão, permitindo arquivos como VERSION-BASIS.
+	VersionType string `toml:"version-type"`
 	// RootVersionFile indica que VersionFile é relativo à RAIZ do repositório,
 	// e não ao SourcePath (caso típico de reactor multi-módulo).
 	RootVersionFile bool `toml:"root-version-file"`
@@ -172,6 +176,7 @@ type ResolvedTarget struct {
 	SourcePath        string
 	Image             string
 	VersionFile       string
+	VersionType       string
 	RootVersionFile   bool
 	ExtraTriggerPaths []string
 	Sonar             bool
@@ -364,6 +369,12 @@ func (c *Config) EffectiveVersionFile(name string) string {
 	}
 }
 
+// EffectiveVersionType retorna o formato explicitamente declarado para o
+// arquivo de versão. Vazio deixa a resolução inferir pelo nome do arquivo.
+func (c *Config) EffectiveVersionType(name string) string {
+	return c.Targets[name].VersionType
+}
+
 // EffectiveMavenImage retorna a imagem maven do target (override ou default).
 func (c *Config) EffectiveMavenImage(name string) string {
 	if img := c.Targets[name].MavenImage; img != "" {
@@ -431,30 +442,31 @@ func (c *Config) Resolve(name string) (ResolvedTarget, error) {
 		return ResolvedTarget{}, fmt.Errorf("target %q não existe na configuração", name)
 	}
 	return ResolvedTarget{
-		Name:              name,
-		Type:              t.Type,
-		QualityType:       c.EffectiveQualityType(name),
-		Path:              c.EffectivePath(name),
-		SourcePath:        c.EffectiveSourcePath(name),
-		Image:             c.EffectiveImage(name),
-		VersionFile:       c.EffectiveVersionFile(name),
-		RootVersionFile:   t.RootVersionFile,
-		ExtraTriggerPaths: t.ExtraTriggerPaths,
-		Sonar:             t.Sonar,
-		SonarProjectKey:   c.EffectiveSonarProjectKey(name),
+		Name:               name,
+		Type:               t.Type,
+		QualityType:        c.EffectiveQualityType(name),
+		Path:               c.EffectivePath(name),
+		SourcePath:         c.EffectiveSourcePath(name),
+		Image:              c.EffectiveImage(name),
+		VersionFile:        c.EffectiveVersionFile(name),
+		VersionType:        c.EffectiveVersionType(name),
+		RootVersionFile:    t.RootVersionFile,
+		ExtraTriggerPaths:  t.ExtraTriggerPaths,
+		Sonar:              t.Sonar,
+		SonarProjectKey:    c.EffectiveSonarProjectKey(name),
 		MavenImage:         c.EffectiveMavenImage(name),
 		UseDocker:          c.EffectiveUseDocker(name),
 		SonarPluginVersion: c.EffectiveSonarPluginVersion(name),
-		Reactor:           t.Reactor,
-		Module:            t.Module,
-		ExtraOptions:      t.ExtraOptions,
-		UvBuildImage:      c.EffectiveUvBuildImage(name),
-		UvRunImage:        c.EffectiveUvRunImage(name),
-		RunSubdir:         t.RunSubdir,
-		Customizations:    t.Customizations,
-		NpmBuildImage:     c.EffectiveNpmBuildImage(name),
-		NpmRunImage:       c.EffectiveNpmRunImage(name),
-		Dockerfile:        c.EffectiveDockerfile(name),
+		Reactor:            t.Reactor,
+		Module:             t.Module,
+		ExtraOptions:       t.ExtraOptions,
+		UvBuildImage:       c.EffectiveUvBuildImage(name),
+		UvRunImage:         c.EffectiveUvRunImage(name),
+		RunSubdir:          t.RunSubdir,
+		Customizations:     t.Customizations,
+		NpmBuildImage:      c.EffectiveNpmBuildImage(name),
+		NpmRunImage:        c.EffectiveNpmRunImage(name),
+		Dockerfile:         c.EffectiveDockerfile(name),
 	}, nil
 }
 

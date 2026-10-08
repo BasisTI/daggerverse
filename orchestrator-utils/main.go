@@ -550,7 +550,12 @@ func bumpPyprojectVersion(content, version string) (string, error) {
 }
 
 // bumpFileVersion substitui a versão no conteúdo do arquivo, baseado no tipo.
-func bumpFileVersion(content, version, filename string) (string, error) {
+// O tipo "plain" escreve somente a versão e uma quebra de linha; o tipo vazio
+// mantém a inferência histórica pelo nome do arquivo.
+func bumpFileVersion(content, version, filename, versionType string) (string, error) {
+	if versionType == "plain" {
+		return version + "\n", nil
+	}
 	switch filename {
 	case "pom.xml":
 		return bumpPomVersion(content, version)
@@ -564,14 +569,17 @@ func bumpFileVersion(content, version, filename string) (string, error) {
 }
 
 // BumpAndCommitVersions faz bump de versão nos arquivos especificados e commita+push.
-// O tipo de bump (Maven, npm, Python) é deduzido automaticamente pelo nome do arquivo
-// (pom.xml, package.json, pyproject.toml).
+// VersionFileTypes deve ficar alinhado a VersionFiles. Um tipo vazio mantém a
+// inferência histórica pelo nome (pom.xml, package.json, pyproject.toml);
+// "plain" substitui o conteúdo inteiro pela versão.
 func (u *OrchestratorUtils) BumpAndCommitVersions(
 	ctx context.Context,
 	// Diretório raiz do repositório Git.
 	source *dagger.Directory,
 	// Arquivos de versão a bumpar (ex: ["admin_backend/pom.xml", "frontend/package.json"]).
 	versionFiles []string,
+	// Formatos dos arquivos, alinhados a versionFiles.
+	versionFileTypes []string,
 	// Nova versão a aplicar.
 	version string,
 	// Mensagem do commit.
@@ -584,15 +592,18 @@ func (u *OrchestratorUtils) BumpAndCommitVersions(
 	if len(versionFiles) == 0 {
 		return nil
 	}
+	if len(versionFileTypes) != len(versionFiles) {
+		return fmt.Errorf("version file types must match version files: got %d types for %d files", len(versionFileTypes), len(versionFiles))
+	}
 
 	bumpedSource := source
-	for _, vf := range versionFiles {
+	for i, vf := range versionFiles {
 		content, err := source.File(vf).Contents(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to read %s: %w", vf, err)
 		}
 
-		modified, err := bumpFileVersion(content, version, filepath.Base(vf))
+		modified, err := bumpFileVersion(content, version, filepath.Base(vf), versionFileTypes[i])
 		if err != nil {
 			return err
 		}

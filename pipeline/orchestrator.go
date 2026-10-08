@@ -143,6 +143,7 @@ func PublishAll[Dir any, Secret any](
 
 	var sb strings.Builder
 	var versionFiles []string
+	var versionFileTypes []string
 	seenVersionFiles := make(map[string]bool)
 	for _, targetName := range targets {
 		target, exists := buildTargets[targetName]
@@ -166,6 +167,7 @@ func PublishAll[Dir any, Secret any](
 		if vf := target.VersionFilePath(targetName); vf != "" && !seenVersionFiles[vf] {
 			seenVersionFiles[vf] = true
 			versionFiles = append(versionFiles, vf)
+			versionFileTypes = append(versionFileTypes, target.VersionType)
 		}
 	}
 
@@ -177,8 +179,9 @@ func PublishAll[Dir any, Secret any](
 	}
 
 	return PublishResult{
-		Published:    published,
-		VersionFiles: versionFiles,
+		Published:        published,
+		VersionFiles:     versionFiles,
+		VersionFileTypes: versionFileTypes,
 	}, nil
 }
 
