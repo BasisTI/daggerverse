@@ -547,6 +547,82 @@ sonar = true
 			wantErr: `sonar = true em type = "dockerfile" exige quality-type`,
 		},
 		{
+			name: "version-type inválido",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+version-file = "VERSION-BASIS"
+version-type = "yaml"
+`,
+			wantErr: `version-type "yaml" inválido`,
+		},
+		{
+			name: "version-type sem version-file explícito",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+version-type = "plain"
+`,
+			wantErr: "version-type exige version-file explícito",
+		},
+		{
+			name: "arquivo desconhecido sem version-type",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+version-file = "VERSION-BASIS"
+`,
+			wantErr: `version-file "VERSION-BASIS" exige version-type = "plain"`,
+		},
+		{
+			name: "pom não aceita version-type",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "maven"
+version-file = "config/pom.xml"
+version-type = "plain"
+`,
+			wantErr: "version-type não é permitido para pom.xml",
+		},
+		{
+			name: "package json não aceita version-type",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "npm"
+version-file = "package.json"
+version-type = "plain"
+`,
+			wantErr: "version-type não é permitido para package.json",
+		},
+		{
+			name: "pyproject não aceita version-type",
+			toml: `
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "uv"
+version-file = "pyproject.toml"
+version-type = "plain"
+`,
+			wantErr: "version-type não é permitido para pyproject.toml",
+		},
+		{
 			name: "sonar-project-key sem sonar",
 			toml: `
 schema-version = 1
@@ -710,6 +786,31 @@ type = "dockerfile"
 	// Sem quality-type, o default histórico do tipo dockerfile não muda.
 	if got := cfg.EffectiveVersionFile("b"); got != VersionFileUv {
 		t.Errorf("version file sem quality-type = %q, quer %q", got, VersionFileUv)
+	}
+}
+
+func TestPlainVersionFile(t *testing.T) {
+	cfg, err := Load([]byte(`
+schema-version = 1
+[project]
+group = "x"
+[targets.a]
+type = "dockerfile"
+version-file = "VERSION-BASIS"
+version-type = "plain"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rt, err := cfg.Resolve("a")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got, want := rt.VersionFilePath(), "a/VERSION-BASIS"; got != want {
+		t.Errorf("VersionFilePath = %q, quer %q", got, want)
+	}
+	if got, want := rt.VersionType, "plain"; got != want {
+		t.Errorf("VersionType = %q, quer %q", got, want)
 	}
 }
 

@@ -552,7 +552,7 @@ func (o *Orchestrator) publishAll(ctx context.Context, collect *reportCollector,
 	if result.Published != "" && a.gitRemoteUrl != "" && len(result.VersionFiles) > 0 {
 		commitMsg := fmt.Sprintf("Bump versão para %s", a.version)
 		if err := dag.OrchestratorUtils().BumpAndCommitVersions(
-			ctx, o.Source, result.VersionFiles, a.version, commitMsg, a.gitBranch, a.gitRemoteUrl,
+			ctx, o.Source, result.VersionFiles, result.VersionFileTypes, a.version, commitMsg, a.gitBranch, a.gitRemoteUrl,
 		); err != nil {
 			return "", fmt.Errorf("falha ao commitar as versões bumpadas: %w", err)
 		}

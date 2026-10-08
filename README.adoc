@@ -248,6 +248,9 @@ Implemented in `pipeline/config`. Parsing is *strict*: any unknown field is an e
 | `version-file` | string
 | Version file bumped by `publish-all`. *Default per type:* `pom.xml` (maven), `package.json` (npm), `pyproject.toml` (uv and dockerfile). When `quality-type` is set, the default follows it — that is the field describing the code. Custom targets have no default.
 
+| `version-type` | string
+| Required as `plain` for every explicitly declared `version-file` other than `pom.xml`, `package.json`, or `pyproject.toml`; it replaces the entire file with the generated version. The three structured files infer their native format and reject `version-type`. Example: `version-file = "VERSION-BASIS"` with `version-type = "plain"`.
+
 | `root-version-file` | bool
 | Marks `version-file` as relative to the *repository root* rather than to the target's `path`. The typical case is a multi-module Maven reactor, where several targets share the root `pom.xml`.
 

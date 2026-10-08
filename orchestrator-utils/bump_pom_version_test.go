@@ -108,11 +108,31 @@ func TestBumpPomVersionWithoutVersion(t *testing.T) {
 }
 
 func TestBumpFileVersionRoutesPomToRevision(t *testing.T) {
-	got, err := bumpFileVersion(revisionPom, "2026.03.03.9", "pom.xml")
+	got, err := bumpFileVersion(revisionPom, "2026.03.03.9", "pom.xml", "")
 	if err != nil {
 		t.Fatalf("bumpFileVersion: %v", err)
 	}
 	if !strings.Contains(got, "<revision>2026.03.03.9</revision>") {
 		t.Fatalf("bumpFileVersion did not reach the revision property:\n%s", got)
+	}
+}
+
+func TestBumpFileVersionPlainOverwritesWholeFile(t *testing.T) {
+	got, err := bumpFileVersion("0.0.0-dev\n", "2026.10.08.4", "VERSION-BASIS", "plain")
+	if err != nil {
+		t.Fatalf("bumpFileVersion: %v", err)
+	}
+	if got != "2026.10.08.4\n" {
+		t.Errorf("plain version = %q, esperado %q", got, "2026.10.08.4\\n")
+	}
+}
+
+func TestBumpFileVersionUnknownNameRequiresExplicitPlain(t *testing.T) {
+	_, err := bumpFileVersion("0.0.0-dev\n", "2026.10.08.4", "VERSION-BASIS", "")
+	if err == nil {
+		t.Fatal("arquivo desconhecido sem version-type deveria falhar")
+	}
+	if !strings.Contains(err.Error(), "unsupported version file type") {
+		t.Fatalf("erro deveria indicar tipo não suportado, obteve: %v", err)
 	}
 }

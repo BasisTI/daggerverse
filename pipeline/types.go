@@ -38,6 +38,10 @@ type BuildTarget[Dir any, Secret any] struct {
 	// "pyproject.toml"). Relativo a SourcePath, ou à raiz do repositório
 	// quando RootVersionFile é true.
 	VersionFile string
+	// VersionType define como VersionFile é atualizado. Vazio preserva a
+	// inferência histórica pelo nome do arquivo; "plain" substitui todo o
+	// conteúdo pelo valor da versão.
+	VersionType string
 	// RootVersionFile indica que VersionFile é relativo à RAIZ do repositório
 	// (caso típico de builds reactor, em que vários targets compartilham o
 	// mesmo pom.xml de raiz).
@@ -49,8 +53,9 @@ type BuildTarget[Dir any, Secret any] struct {
 
 // PublishResult contém o resultado de PublishAll.
 type PublishResult struct {
-	Published    string   // imagens publicadas (uma por linha)
-	VersionFiles []string // paths relativos ao repo dos arquivos de versão bumped (ex: "admin_backend/pom.xml")
+	Published        string   // imagens publicadas (uma por linha)
+	VersionFiles     []string // paths relativos ao repo dos arquivos de versão bumped (ex: "admin_backend/pom.xml")
+	VersionFileTypes []string // formatos alinhados a VersionFiles; vazio infere pelo nome
 }
 
 // SourcePath retorna o path do projeto no repositório.
