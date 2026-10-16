@@ -64,7 +64,7 @@ func TestWithReusedReportsPartitionsTargets(t *testing.T) {
 	accept := func(context.Context, string) string { return "" }
 
 	t.Run("com relatório do api", func(t *testing.T) {
-		targets, err := qualityTargets(cfg, nil, nil)
+		targets, err := qualityTargets(cfg, nil, nil, registryCredential{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +82,7 @@ func TestWithReusedReportsPartitionsTargets(t *testing.T) {
 	})
 
 	t.Run("sem diretório de relatórios", func(t *testing.T) {
-		targets, err := qualityTargets(cfg, nil, nil)
+		targets, err := qualityTargets(cfg, nil, nil, registryCredential{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,7 +101,7 @@ func TestWithReusedReportsPartitionsTargets(t *testing.T) {
 	// O diretório existe e o target está nele, mas a conferência recusa: vai para o check
 	// completo, com o motivo no log, e nunca é analisado com o dado recusado.
 	t.Run("conferência recusa", func(t *testing.T) {
-		targets, err := qualityTargets(cfg, nil, nil)
+		targets, err := qualityTargets(cfg, nil, nil, registryCredential{})
 		if err != nil {
 			t.Fatal(err)
 		}

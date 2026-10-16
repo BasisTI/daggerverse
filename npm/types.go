@@ -31,6 +31,9 @@ type PipelineStage struct {
 	Goals       []string
 	Options     []string
 	Image       string
+	// installsPackages marca o passo que baixa pacotes do registro e, por isso, recebe a
+	// credencial quando ela existe.
+	installsPackages bool
 }
 
 // DockerBuildConfig stores the data needed to construct an image reference and authenticate pushes.
