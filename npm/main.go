@@ -99,8 +99,10 @@ func New(
 	// usa um cache do npm efêmero, e não o cache volume compartilhado: o npm 6 grava o cabeçalho
 	// Authorization no índice do cache.
 	//
-	// A credencial só vai ao host e caminho do registro (`//host/caminho/:_auth`), sem
-	// `always-auth`: tarball de lockfile em outro host não a recebe.
+	// A credencial vai a qualquer URL do host do registro, sem `always-auth`: tarball de lockfile
+	// em outro host não a recebe, nem depois de redirect 302 ou 307. O caminho da chave
+	// (`//host/caminho/:_auth`) não a limita: o npm 6 e o npm 10 a mandam também a outro caminho no
+	// mesmo host. O host do registro é da Basis, e esse é o limite de confiança.
 	//
 	// Opcional: sem ela o `npm ci` roda como sempre rodou. Com ela, a credencial não é usada quando
 	// o .npmrc não declara `registry=` ou declara um registro público (registry.npmjs.org,
@@ -417,7 +419,8 @@ var errPublicRegistry = errors.New("registro público")
 // registryAuthUserconfigFor devolve o userconfig da instalação para o registro e as chaves que ele
 // usa. Cada chave só tem o `_auth`: sem `always-auth`, o npm manda a credencial apenas para URLs do
 // host do registro -- inclusive no npm 6 --, e um tarball de lockfile em outro host (outro nome do
-// mesmo Nexus, ou um host de fora) vai sem ela e recebe 401.
+// mesmo Nexus, ou um host de fora) vai sem ela e recebe 401. O caminho da chave não restringe nada
+// dentro do host: o npm 6 e o npm 10 mandam a credencial a outro caminho do mesmo host.
 func registryAuthUserconfigFor(registry string) (string, []string, error) {
 	keys, err := registryAuthKeys(registry)
 	if err != nil {
@@ -495,8 +498,11 @@ func registryAuthKeys(registry string) ([]string, error) {
 	if u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("não é uma URL http(s) com host")
 	}
+	// O nome é comparado como o DNS o resolve: sem a porta, sem diferenciar maiúsculas e sem o
+	// ponto final (`registry.npmjs.org.` é o mesmo host que `registry.npmjs.org`).
+	host := strings.ToLower(strings.TrimRight(u.Hostname(), "."))
 	for _, public := range publicRegistries {
-		if strings.EqualFold(u.Hostname(), public) {
+		if host == public {
 			return nil, errPublicRegistry
 		}
 	}

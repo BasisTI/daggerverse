@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -161,8 +162,9 @@ func noLeak(ctx context.Context, t *testing.T, what string, c *dagger.Container,
 }
 
 // outsideReceiver é um host que não é o registro nem outro nome dele: registra se cada requisição
-// trouxe Authorization e responde 401. GET /seen devolve o registro.
-func outsideReceiver() *dagger.Service {
+// trouxe Authorization e responde 401. GET /seen devolve o registro. O id entra no container para o
+// serviço ser só desta execução: o engine reaproveita um serviço de definição igual.
+func outsideReceiver(id string) *dagger.Service {
 	server := `const http = require('http'); const seen = [];
 http.createServer((q, s) => {
   if (q.url === '/seen') { s.end(JSON.stringify(seen)); return; }
@@ -170,6 +172,7 @@ http.createServer((q, s) => {
   s.statusCode = 401; s.end('nao autorizado');
 }).listen(4873, '0.0.0.0');`
 	return dag.Container().From("node:22.16.0-alpine3.22").
+		WithEnvVariable("TG331_RECEIVER_ID", id).
 		WithNewFile("/server.js", server).
 		WithExposedPort(4873).
 		AsService(dagger.ContainerAsServiceOpts{Args: []string{"node", "/server.js"}})
@@ -260,7 +263,7 @@ func TestEngineRegistryAuth(t *testing.T) {
 			var outside *dagger.Service
 			registry := svc
 			if sc.lock == lockOutside {
-				outside = outsideReceiver()
+				outside = outsideReceiver(dep)
 				registry = tarballProxy(svc)
 			}
 			bind := func(c *dagger.Container) *dagger.Container {
@@ -311,17 +314,34 @@ func TestEngineRegistryAuth(t *testing.T) {
 				if !errors.As(err, &execErr) || !strings.Contains(execErr.Stderr, "401") {
 					t.Fatalf("tarball em host de fora devia falhar com 401; erro: %v", err)
 				}
+				// A leitura leva um id único: com a mesma definição, o engine devolveria o /seen de uma
+				// leitura anterior, em cache, e não o estado de agora.
 				seen, err := inspect.WithServiceBinding("outside", outside).
+					WithEnvVariable("TG331_SEEN_READ", fmt.Sprintf("%s-%d", dep, time.Now().UnixNano())).
 					WithExec([]string{"wget", "-qO-", "http://outside:4873/seen"}).Stdout(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
 				t.Logf("host de fora recebeu: %s", seen)
-				if !strings.Contains(seen, ".tgz") {
-					t.Fatalf("o npm não chegou a pedir o tarball ao host de fora: %s", seen)
+				var requests []struct {
+					URL  string `json:"url"`
+					Auth bool   `json:"auth"`
 				}
-				if strings.Contains(seen, `"auth":true`) {
-					t.Fatalf("o host de fora recebeu Authorization: %s", seen)
+				if err := json.Unmarshal([]byte(seen), &requests); err != nil {
+					t.Fatalf("resposta do /seen: %v: %q", err, seen)
+				}
+				tarball := false
+				for _, r := range requests {
+					if r.Auth {
+						t.Fatalf("o host de fora recebeu Authorization em %s: %s", r.URL, seen)
+					}
+					// O tarball da dependência publicada neste cenário, e não um de outra execução.
+					if strings.Contains(r.URL, dep) && strings.HasSuffix(r.URL, ".tgz") {
+						tarball = true
+					}
+				}
+				if !tarball {
+					t.Fatalf("o npm não chegou a pedir ao host de fora o tarball de %s: %s", dep, seen)
 				}
 				return
 			}

@@ -64,6 +64,9 @@ func TestRegistryAuthKeysRegistroPublico(t *testing.T) {
 	for _, public := range []string{
 		"https://registry.npmjs.org/", "https://registry.npmjs.org", "http://registry.npmjs.org/",
 		"https://REGISTRY.NPMJS.ORG/", "https://registry.npmjs.org:443/", "https://registry.yarnpkg.com/",
+		// O ponto final DNS é o mesmo host.
+		"https://registry.npmjs.org./", "https://registry.yarnpkg.com./", "https://Registry.NPMJS.org.:443/",
+		"https://registry.npmjs.org../",
 	} {
 		if _, err := registryAuthKeys(public); !errors.Is(err, errPublicRegistry) {
 			t.Fatalf("registryAuthKeys(%q): quero errPublicRegistry, veio %v", public, err)
