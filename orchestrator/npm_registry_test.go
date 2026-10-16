@@ -5,29 +5,70 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"dagger/orchestrator/internal/dagger"
+
+	"github.com/BasisTI/daggerverse/pipeline/config"
 )
 
-// TestNpmRecebeCredencialDoRegistro garante que todo módulo npm instanciado pelas estratégias
-// passa por npmOpts com a credencial do registro. Um dag.Npm montado sem ela faria o `npm ci`
-// daquele caminho voltar ao E401 do Nexus, sem nada no orchestrator acusar.
-func TestNpmRecebeCredencialDoRegistro(t *testing.T) {
-	src, err := os.ReadFile("strategies.go")
-	if err != nil {
-		t.Fatal(err)
+// TestNpmOptsLevaCredencial confere o conteúdo das opções: usuário e o mesmo Secret, e não só o
+// formato da chamada. Um `RegistryPassword: nil` em npmOpts faria o `npm ci` voltar ao E401.
+func TestNpmOptsLevaCredencial(t *testing.T) {
+	secret := &dagger.Secret{}
+	rt := config.ResolvedTarget{NpmBuildImage: "node:14", NpmRunImage: "nginx:1"}
+	opts := npmOpts(rt, registryCredential{user: "jenkins", password: secret})
+	if opts.RegistryUser != "jenkins" || opts.RegistryPassword != secret {
+		t.Fatalf("npmOpts perdeu a credencial: user=%q password=%p (quero %p)", opts.RegistryUser, opts.RegistryPassword, secret)
 	}
-	code := string(src)
-	calls := regexp.MustCompile(`dag\.Npm\(source, ([^\n]*)\)\n`).FindAllStringSubmatch(code, -1)
-	if len(calls) != strings.Count(code, "dag.Npm(") || len(calls) == 0 {
+	if opts.BuildImage != "node:14" || opts.RunImage != "nginx:1" {
+		t.Fatalf("npmOpts perdeu as imagens: %+v", opts)
+	}
+	if empty := npmOpts(rt, registryCredential{}); empty.RegistryUser != "" || empty.RegistryPassword != nil {
+		t.Fatalf("sem credencial, npmOpts devia ir sem ela: %+v", empty)
+	}
+}
+
+// TestNpmRecebeCredencialDoRegistro garante que a credencial chega a npmOpts por todos os caminhos:
+// cada dag.Npm das estratégias, e cada função pública que monta a credencial para a análise. O
+// conteúdo de npmOpts é do TestNpmOptsLevaCredencial; aqui vale o texto exato de cada chamada,
+// para que uma credencial pela metade (`registryCredential{user: registryUser}`) não passe.
+func TestNpmRecebeCredencialDoRegistro(t *testing.T) {
+	const fromParams = "registryCredential{user: registryUser, password: registryPassword}"
+	read := func(name string) string {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(src)
+	}
+
+	strategies := read("strategies.go")
+	calls := regexp.MustCompile(`dag\.Npm\(source, ([^\n]*)\)\n`).FindAllStringSubmatch(strategies, -1)
+	if len(calls) != strings.Count(strategies, "dag.Npm(") || len(calls) != 2 {
 		t.Fatalf("dag.Npm( fora do formato esperado em strategies.go: o teste perdeu o alvo")
 	}
+	allowed := map[string]bool{
+		// publishNpm: a credencial que publica a imagem.
+		"npmOpts(rt, " + fromParams + ")": true,
+		// checkNpm: opts vem de npmOpts(rt, npmRegistry), conferido abaixo.
+		"opts": true,
+	}
 	for _, c := range calls {
-		if c[1] != "opts" && !strings.HasPrefix(c[1], "npmOpts(rt, registryCredential{") {
-			t.Errorf("dag.Npm(source, %s) não passa pela credencial do registro", c[1])
+		if !allowed[c[1]] {
+			t.Errorf("dag.Npm(source, %s) não passa a credencial do registro inteira", c[1])
 		}
 	}
-	for _, m := range regexp.MustCompile(`npmOpts\(rt, ([^)]*)\)`).FindAllStringSubmatch(code, -1) {
-		if m[1] == "registryCredential{}" {
-			t.Errorf("npmOpts com credencial vazia em strategies.go")
-		}
+	if !strings.Contains(strategies, "opts := npmOpts(rt, npmRegistry)\n") {
+		t.Errorf("checkNpm não monta opts com npmOpts(rt, npmRegistry)")
+	}
+	if n := strings.Count(strategies, "npmOpts(rt, "); n != 2 {
+		t.Errorf("npmOpts chamado %d vezes em strategies.go; o teste conhece 2", n)
+	}
+
+	// check-quality e check-quality-from-reports repassam os parâmetros a qualityTargets.
+	main := read("main.go")
+	if n := strings.Count(main, "qualityTargets(cfg, sonarExtra, nvdApiKey, "+fromParams+")"); n != 2 ||
+		strings.Count(main, "qualityTargets(") != 2 {
+		t.Errorf("check-quality e check-quality-from-reports deviam repassar %s a qualityTargets", fromParams)
 	}
 }

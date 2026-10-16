@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"dagger/npm/internal/dagger"
@@ -54,6 +56,42 @@ func TestRegistryAuthKeys(t *testing.T) {
 		if _, err := registryAuthKeys(bad); err == nil {
 			t.Fatalf("registryAuthKeys(%q) devia falhar", bad)
 		}
+	}
+}
+
+// O registro público não recebe a credencial do registry da Basis, nem declarado explicitamente.
+func TestRegistryAuthKeysRegistroPublico(t *testing.T) {
+	for _, public := range []string{
+		"https://registry.npmjs.org/", "https://registry.npmjs.org", "http://registry.npmjs.org/",
+		"https://REGISTRY.NPMJS.ORG/", "https://registry.npmjs.org:443/", "https://registry.yarnpkg.com/",
+	} {
+		if _, err := registryAuthKeys(public); !errors.Is(err, errPublicRegistry) {
+			t.Fatalf("registryAuthKeys(%q): quero errPublicRegistry, veio %v", public, err)
+		}
+	}
+	// Só o host exato: um Nexus com "npmjs" no caminho continua recebendo.
+	if _, err := registryAuthKeys("https://nexus.example/repository/registry.npmjs.org/"); err != nil {
+		t.Fatalf("registro privado com npmjs no caminho: %v", err)
+	}
+}
+
+// O userconfig só tem o _auth por chave, por referência à variável: sem always-auth, que mandaria a
+// credencial a tarballs de outros hosts no npm 6, e sem o valor.
+func TestRegistryAuthUserconfig(t *testing.T) {
+	got, keys, err := registryAuthUserconfigFor("https://nexus.basis.com.br/repository/npm-registry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "//nexus.basis.com.br/repository/npm-registry/:_auth=${NPM_REGISTRY_AUTH}\n" +
+		"//nexus.basis.com.br/repository/:_auth=${NPM_REGISTRY_AUTH}\n"
+	if got != want {
+		t.Fatalf("userconfig = %q, quero %q", got, want)
+	}
+	if len(keys) != 2 || strings.Contains(got, "always-auth") {
+		t.Fatalf("chaves %v, userconfig %q", keys, got)
+	}
+	if _, _, err := registryAuthUserconfigFor("https://registry.npmjs.org/"); !errors.Is(err, errPublicRegistry) {
+		t.Fatalf("registro público: quero errPublicRegistry, veio %v", err)
 	}
 }
 

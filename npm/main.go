@@ -5,6 +5,7 @@ import (
 	"dagger/npm/internal/dagger"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -94,10 +95,16 @@ func New(
 	// login (o Nexus, por exemplo) recusa o `npm ci` com E401 sem uma credencial entregue aqui. O
 	// `_auth` é montado dentro do engine e entra como variável secreta só na execução da
 	// instalação, referenciado por um userconfig temporário (`${NPM_REGISTRY_AUTH}`); os dois saem
-	// do container logo depois: não ficam em camada, no cache do npm nem no diretório publicado.
+	// do container logo depois: não ficam em camada nem no diretório publicado. Essa instalação
+	// usa um cache do npm efêmero, e não o cache volume compartilhado: o npm 6 grava o cabeçalho
+	// Authorization no índice do cache.
 	//
-	// Opcional: sem ela o `npm ci` roda como sempre rodou. Com ela e sem `registry=` no .npmrc, a
-	// credencial não é usada -- o registro seria o público, que não deve recebê-la.
+	// A credencial só vai ao host e caminho do registro (`//host/caminho/:_auth`), sem
+	// `always-auth`: tarball de lockfile em outro host não a recebe.
+	//
+	// Opcional: sem ela o `npm ci` roda como sempre rodou. Com ela, a credencial não é usada quando
+	// o .npmrc não declara `registry=` ou declara um registro público (registry.npmjs.org,
+	// registry.yarnpkg.com), que não deve recebê-la.
 	// +optional
 	registryPassword *dagger.Secret) *Npm {
 	return &Npm{
@@ -115,7 +122,7 @@ func New(
 func (n *Npm) NewContainer() *dagger.Container {
 	container := dag.Container().From(n.BuildImage)
 	if n.UseCache {
-		container = container.WithMountedCache("/root/.npm", dag.CacheVolume(DefaultNpmCacheName))
+		container = container.WithMountedCache(npmCacheDir, dag.CacheVolume(DefaultNpmCacheName))
 	}
 	if n.Source != nil {
 		container = container.WithDirectory(DefaultWorkdir, n.Source, dagger.ContainerWithDirectoryOpts{Exclude: []string{"**/node_modules", "**/dist"}})
@@ -347,6 +354,14 @@ const registryAuthEnv = "NPM_REGISTRY_AUTH"
 // não cair em nada que seja copiado adiante, e não guarda segredo: só a referência à variável.
 const registryAuthUserconfig = "/tmp/npm-registry-auth/npmrc"
 
+// npmCacheDir é onde o cache do npm fica: o cache volume compartilhado sem credencial, um diretório
+// efêmero na instalação com credencial.
+const npmCacheDir = "/root/.npm"
+
+// publicRegistries são os registros públicos: a credencial do registry da Basis não vai para eles
+// nem quando o .npmrc os declara explicitamente.
+var publicRegistries = []string{"registry.npmjs.org", "registry.yarnpkg.com"}
+
 // registryAuth é a credencial pronta para a instalação: o segredo e o userconfig que o referencia.
 type registryAuth struct {
 	secret     *dagger.Secret
@@ -372,22 +387,17 @@ func (n *Npm) registryAuth(ctx context.Context) (*registryAuth, error) {
 		fmt.Printf("ℹ️  %s não declara `registry=`: npm ci sem credencial (o registro público não deve recebê-la).\n", n.npmrcPath())
 		return nil, nil
 	}
-	keys, err := registryAuthKeys(registry)
+	userconfig, keys, err := registryAuthUserconfigFor(registry)
+	if errors.Is(err, errPublicRegistry) {
+		fmt.Printf("ℹ️  registry=%q no %s é um registro público: npm ci sem credencial (ela é do registry da Basis e não sai para serviço público).\n", registry, n.npmrcPath())
+		return nil, nil
+	}
 	if err != nil {
 		// Não derruba o build: o publish-all sempre repassa a credencial das imagens, e um .npmrc
 		// que o npm entende mas este parser não (`registry=${VAR}`, por exemplo) seguia
 		// funcionando sem ela até aqui.
 		fmt.Printf("⚠️  registry=%q no %s: %v. npm ci sem credencial.\n", registry, n.npmrcPath(), err)
 		return nil, nil
-	}
-	var lines []string
-	for _, key := range keys {
-		lines = append(lines,
-			key+":_auth=${"+registryAuthEnv+"}",
-			// O npm 6 (node <= 14) só manda a credencial para tarball em outro host com always-auth,
-			// e lockfile v1 guarda a URL do tarball como foi resolvida -- às vezes por outro nome do
-			// mesmo Nexus. O npm 7+ ignora a opção.
-			key+":always-auth=true")
 	}
 	password, err := n.RegistryPassword.Plaintext(ctx)
 	if err != nil {
@@ -398,21 +408,50 @@ func (n *Npm) registryAuth(ctx context.Context) (*registryAuth, error) {
 	secret := dag.SetSecret("npm-registry-auth",
 		base64.StdEncoding.EncodeToString([]byte(n.RegistryUser+":"+password)))
 	fmt.Printf("🔐 Credencial do registro npm (usuário %s) aplicada a %s\n", n.RegistryUser, strings.Join(keys, ", "))
-	return &registryAuth{secret: secret, userconfig: strings.Join(lines, "\n") + "\n"}, nil
+	return &registryAuth{secret: secret, userconfig: userconfig}, nil
+}
+
+// errPublicRegistry marca o registro público, que não recebe a credencial.
+var errPublicRegistry = errors.New("registro público")
+
+// registryAuthUserconfigFor devolve o userconfig da instalação para o registro e as chaves que ele
+// usa. Cada chave só tem o `_auth`: sem `always-auth`, o npm manda a credencial apenas para URLs do
+// host do registro -- inclusive no npm 6 --, e um tarball de lockfile em outro host (outro nome do
+// mesmo Nexus, ou um host de fora) vai sem ela e recebe 401.
+func registryAuthUserconfigFor(registry string) (string, []string, error) {
+	keys, err := registryAuthKeys(registry)
+	if err != nil {
+		return "", nil, err
+	}
+	var lines []string
+	for _, key := range keys {
+		lines = append(lines, key+":_auth=${"+registryAuthEnv+"}")
+	}
+	return strings.Join(lines, "\n") + "\n", keys, nil
 }
 
 // withExec roda cmd com a credencial e a retira do container em seguida: o userconfig, a variável
 // que aponta para ele e a variável secreta só existem durante essa execução. Os passos seguintes
 // (o build, o Sonar) e o diretório publicado não herdam nada.
+//
+// O cache do npm dessa execução é efêmero (WithMountedTemp, descartado ao fim do exec) e substitui o
+// cache volume compartilhado: o npm 6 grava no índice do cache (`_cacache/index-v5`) o cabeçalho
+// Authorization das requisições ao registro, e o cache volume é do runner, entre projetos. Limpar o
+// índice depois seria frágil. O NPM_CONFIG_CACHE fixa o caminho mesmo que o .npmrc do projeto
+// declare outro `cache=`. Depois do exec, /root/.npm fica sem montagem: o build não usa cache.
 func (a *registryAuth) withExec(container *dagger.Container, cmd []string) *dagger.Container {
 	return container.
+		WithMountedTemp(npmCacheDir).
+		WithEnvVariable("NPM_CONFIG_CACHE", npmCacheDir).
 		WithNewFile(registryAuthUserconfig, a.userconfig).
 		WithEnvVariable("NPM_CONFIG_USERCONFIG", registryAuthUserconfig).
 		WithSecretVariable(registryAuthEnv, a.secret).
 		WithExec(cmd).
 		WithoutSecretVariable(registryAuthEnv).
 		WithoutEnvVariable("NPM_CONFIG_USERCONFIG").
-		WithoutFile(registryAuthUserconfig)
+		WithoutFile(registryAuthUserconfig).
+		WithoutEnvVariable("NPM_CONFIG_CACHE").
+		WithoutMount(npmCacheDir)
 }
 
 // npmrcPath é o caminho do .npmrc do projeto dentro de Source, ao lado do package.json.
@@ -455,6 +494,11 @@ func registryAuthKeys(registry string) ([]string, error) {
 	}
 	if u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("não é uma URL http(s) com host")
+	}
+	for _, public := range publicRegistries {
+		if strings.EqualFold(u.Hostname(), public) {
+			return nil, errPublicRegistry
+		}
 	}
 	withSlash := u.Path
 	if !strings.HasSuffix(withSlash, "/") {

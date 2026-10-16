@@ -20,7 +20,8 @@ import (
 //
 //	TG331_ENGINE_TESTS=1 dagger run go test -run TestEngine -v ./...
 //
-// Com TG331_EXPORT_DIR, as imagens montadas são exportadas como tarball para inspeção externa.
+// Com TG331_EXPORT_DIR, as imagens montadas são exportadas como tarball, e o container de build como
+// diretório, para inspeção externa.
 //
 // A credencial é fictícia e só existe aqui. Ela entra no engine sempre como segredo (inclusive o
 // htpasswd e a lista de padrões do grep), para que a saída do `dagger run` possa ser varrida atrás
@@ -68,9 +69,10 @@ log: { type: stdout, format: pretty, level: http }
 		AsService(dagger.ContainerAsServiceOpts{UseEntrypoint: true})
 }
 
-// withRegistry liga o registro a um container por dois nomes: `registry`, o do .npmrc, e `element`,
-// outro nome do mesmo servidor -- como o lockfile v1 do portal-liven, que guarda os tarballs em
-// http://element.basis.com.br enquanto o .npmrc aponta para https://nexus.basis.com.br.
+// withRegistry liga o registro aos containers de preparação por dois nomes: `registry`, o do .npmrc,
+// e `element`, outro nome do mesmo servidor -- como o lockfile v1 do portal-liven, que guarda os
+// tarballs em http://element.basis.com.br enquanto o .npmrc aponta para https://nexus.basis.com.br.
+// O build do teste só recebe `registry`.
 func withRegistry(c *dagger.Container, svc *dagger.Service) *dagger.Container {
 	return c.WithServiceBinding("registry", svc).WithServiceBinding("element", svc)
 }
@@ -158,6 +160,56 @@ func noLeak(ctx context.Context, t *testing.T, what string, c *dagger.Container,
 	}
 }
 
+// outsideReceiver é um host que não é o registro nem outro nome dele: registra se cada requisição
+// trouxe Authorization e responde 401. GET /seen devolve o registro.
+func outsideReceiver() *dagger.Service {
+	server := `const http = require('http'); const seen = [];
+http.createServer((q, s) => {
+  if (q.url === '/seen') { s.end(JSON.stringify(seen)); return; }
+  seen.push({url: q.url, auth: !!q.headers.authorization});
+  s.statusCode = 401; s.end('nao autorizado');
+}).listen(4873, '0.0.0.0');`
+	return dag.Container().From("node:22.16.0-alpine3.22").
+		WithNewFile("/server.js", server).
+		WithExposedPort(4873).
+		AsService(dagger.ContainerAsServiceOpts{Args: []string{"node", "/server.js"}})
+}
+
+// tarballProxy fica na frente do registro e só reescreve, nos metadados, a URL dos tarballs para o
+// outsideReceiver: é o registro que devolve `dist.tarball` em outro host. Não mexe em autenticação.
+func tarballProxy(svc *dagger.Service) *dagger.Service {
+	proxy := `const http = require('http');
+http.createServer((q, s) => {
+  const r = http.request({hostname: 'upstream', port: 4873, path: q.url, method: q.method, headers: q.headers}, u => {
+    const b = []; u.on('data', c => b.push(c));
+    u.on('end', () => {
+      const text = Buffer.concat(b).toString().split('http://registry:4873/').join('http://outside:4873/');
+      s.statusCode = u.statusCode; s.end(text);
+    });
+  });
+  q.pipe(r);
+}).listen(4873, '0.0.0.0');`
+	return dag.Container().From("node:22.16.0-alpine3.22").
+		WithServiceBinding("upstream", svc).
+		WithNewFile("/proxy.js", proxy).
+		WithExposedPort(4873).
+		AsService(dagger.ContainerAsServiceOpts{Args: []string{"node", "/proxy.js"}})
+}
+
+// lockHost é para onde o lockfile do cenário aponta os tarballs.
+type lockHost int
+
+const (
+	// lockSameHost: o host do .npmrc, como o lockfile deve estar.
+	lockSameHost lockHost = iota
+	// lockUnboundAlias: `element`, outro nome do registro que o container não resolve. O npm 6 cai
+	// para os metadados do registro declarado -- o caminho em que ele grava o Authorization no
+	// índice do cache.
+	lockUnboundAlias
+	// lockOutside: um host de fora, para onde o registro também manda os tarballs (tarballProxy).
+	lockOutside
+)
+
 func TestEngineRegistryAuth(t *testing.T) {
 	registryEngineTest(t)
 	ctx := context.Background()
@@ -175,12 +227,17 @@ func TestEngineRegistryAuth(t *testing.T) {
 
 	scenarios := []struct {
 		name, image string
-		aliasHost   bool
+		lock        lockHost
 	}{
-		// O default do módulo: npm 10, lockfile v3, tarballs no host do .npmrc.
-		{"node22", "node:22.16.0-alpine3.22", false},
-		// O portal-liven: npm 6, lockfile v1, tarballs em outro nome do registro.
-		{"node14-lockv1-alias", "node:14.19.2-alpine3.15", true},
+		// O default do módulo: npm 10, lockfile v3.
+		{"node22", "node:22.16.0-alpine3.22", lockSameHost},
+		// O portal-liven depois de reescrever os `resolved`: npm 6, lockfile v1, tarballs no host
+		// do .npmrc. Sem always-auth, o npm 6 manda a credencial ao tarball do mesmo host.
+		{"node14-lockv1", "node:14.19.2-alpine3.15", lockSameHost},
+		// O caso da revisão (P6): tarball num host que não resolve, fallback ao registro.
+		{"node14-cache-fallback", "node:14.19.2-alpine3.15", lockUnboundAlias},
+		// P7: tarball num host de fora. Ele não recebe a credencial e o build falha com 401.
+		{"node14-host-externo", "node:14.19.2-alpine3.15", lockOutside},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -188,13 +245,34 @@ func TestEngineRegistryAuth(t *testing.T) {
 			if err := publishFixtureDependency(ctx, svc, auth, dep); err != nil {
 				t.Fatalf("publicar a dependência no registro: %v", err)
 			}
-			src, err := fixtureProject(ctx, svc, auth, sc.image, dep, sc.aliasHost)
+			src, err := fixtureProject(ctx, svc, auth, sc.image, dep, false)
 			if err != nil {
 				t.Fatalf("montar o projeto: %v", err)
 			}
+			if sc.lock != lockSameHost {
+				lock, err := src.File("package-lock.json").Contents(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				host := map[lockHost]string{lockUnboundAlias: "http://element:4873/", lockOutside: "http://outside:4873/"}[sc.lock]
+				src = src.WithNewFile("package-lock.json", strings.ReplaceAll(lock, "http://registry:4873/", host))
+			}
+			var outside *dagger.Service
+			registry := svc
+			if sc.lock == lockOutside {
+				outside = outsideReceiver()
+				registry = tarballProxy(svc)
+			}
+			bind := func(c *dagger.Container) *dagger.Container {
+				c = c.WithServiceBinding("registry", registry)
+				if outside != nil {
+					c = c.WithServiceBinding("outside", outside)
+				}
+				return c
+			}
 			newNpm := func(user string, password *dagger.Secret) *Npm {
 				n := New(src, sc.image, "nginx:1.27.3-alpine-slim", true, "", user, password)
-				n.NodeContainer = withRegistry(n.NewContainer(), svc)
+				n.NodeContainer = bind(n.NewContainer())
 				return n
 			}
 
@@ -205,15 +283,48 @@ func TestEngineRegistryAuth(t *testing.T) {
 				t.Fatalf("sem credencial o npm ci devia falhar com E401; erro: %v", err)
 			}
 
-			// Com credencial: instala, builda e monta a imagem.
+			// Com credencial. O cache volume do npm é trocado por um do cenário, com um marcador:
+			// a instalação autenticada não pode escrever nele (o cache dela é efêmero).
+			cache := dag.CacheVolume(fmt.Sprintf("tg331-npm-cache-%s-%d", sc.name, time.Now().UnixNano()))
+			if _, err := dag.Container().From(inspectImage).WithMountedCache("/c", cache).
+				WithExec([]string{"sh", "-c", "echo marcador > /c/marcador"}).Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
 			// A versão vai no package.json antes, e não pelo FullBuild: com versão, ele recria o
 			// container e perderia a ligação com o registro que o teste injeta.
 			n := newNpm(fakeRegistryUser, password)
 			if n.Source, err = n.withPackageJsonVersion(ctx, "2026.10.16.1"); err != nil {
 				t.Fatalf("versão no package.json: %v", err)
 			}
-			n.NodeContainer = withRegistry(n.NewContainer(), svc)
+			n.NodeContainer = bind(n.NewContainer()).WithMountedCache(npmCacheDir, cache)
 			result, err := n.FullBuild(ctx, "abc123", "", nil, nil, nil)
+
+			inspect := dag.Container().From(inspectImage)
+			cacheFiles, cerr := inspect.WithMountedCache("/c", cache).
+				WithExec([]string{"sh", "-c", "cd /c && find . -mindepth 1 | sort"}).Stdout(ctx)
+			if cerr != nil || strings.TrimSpace(cacheFiles) != "./marcador" {
+				t.Fatalf("a instalação com credencial escreveu no cache volume (%d entradas, credencial em %v): %v",
+					strings.Count(cacheFiles, "\n"), leaks(ctx, t, "cache volume", inspect.WithMountedCache("/c", cache), "/c"), cerr)
+			}
+
+			if sc.lock == lockOutside {
+				if !errors.As(err, &execErr) || !strings.Contains(execErr.Stderr, "401") {
+					t.Fatalf("tarball em host de fora devia falhar com 401; erro: %v", err)
+				}
+				seen, err := inspect.WithServiceBinding("outside", outside).
+					WithExec([]string{"wget", "-qO-", "http://outside:4873/seen"}).Stdout(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("host de fora recebeu: %s", seen)
+				if !strings.Contains(seen, ".tgz") {
+					t.Fatalf("o npm não chegou a pedir o tarball ao host de fora: %s", seen)
+				}
+				if strings.Contains(seen, `"auth":true`) {
+					t.Fatalf("o host de fora recebeu Authorization: %s", seen)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("com credencial o build devia passar: %v", err)
 			}
@@ -223,29 +334,40 @@ func TestEngineRegistryAuth(t *testing.T) {
 				t.Fatalf("a imagem devia trazer o dist com a dependência: %q, %v", depJS, err)
 			}
 
-			// Nada da credencial sobra: nem no container de build, nem na imagem, nem no cache do npm.
+			// Nada da credencial sobra: nem no container de build, nem na imagem.
 			for _, c := range []struct {
 				what string
 				c    *dagger.Container
 			}{{"container de build", result.Container}, {"imagem", image}} {
-				for _, env := range []string{registryAuthEnv, "NPM_CONFIG_USERCONFIG"} {
+				for _, env := range []string{registryAuthEnv, "NPM_CONFIG_USERCONFIG", "NPM_CONFIG_CACHE"} {
 					if v, _ := c.c.EnvVariable(ctx, env); v != "" {
 						t.Fatalf("%s: variável %s ficou definida", c.what, env)
+					}
+				}
+				mounts, err := c.c.Mounts(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, m := range mounts {
+					if m == npmCacheDir {
+						t.Fatalf("%s: %s continua montado depois da instalação", c.what, npmCacheDir)
 					}
 				}
 			}
 			if _, err := result.Container.File(registryAuthUserconfig).Contents(ctx); err == nil {
 				t.Fatalf("container de build: %s ficou no container", registryAuthUserconfig)
 			}
-			inspect := dag.Container().From(inspectImage)
 			noLeak(ctx, t, "container de build", inspect.WithMountedDirectory("/r", result.Container.Rootfs()), "/r")
 			noLeak(ctx, t, "imagem", inspect.WithMountedDirectory("/r", image.Rootfs()), "/r")
-			noLeak(ctx, t, "cache do npm", inspect.WithMountedCache("/c", dag.CacheVolume(DefaultNpmCacheName)), "/c")
 
 			if dir := os.Getenv("TG331_EXPORT_DIR"); dir != "" {
 				path := filepath.Join(dir, "imagem-"+sc.name+".tar")
 				if _, err := image.Export(ctx, path); err != nil {
 					t.Fatalf("exportar a imagem: %v", err)
+				}
+				// O container de build também, para a varredura de fora alcançar o /root/.npm dele.
+				if _, err := result.Container.Rootfs().Export(ctx, filepath.Join(dir, "build-"+sc.name)); err != nil {
+					t.Fatalf("exportar o container de build: %v", err)
 				}
 			}
 		})
