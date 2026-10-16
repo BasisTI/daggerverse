@@ -94,7 +94,7 @@ Dagger modules need a few extra steps:
 
 - **Generated code.** `dagger.gen.go` and `internal/` are gitignored. Run `dagger develop` inside the module directory to (re)generate them. That command also bumps `engineVersion` in `dagger.json` to your local engine; revert that line unless the bump is intended.
 - **Tests need an engine session.** The generated `init` panics with `DAGGER_SESSION_PORT is not set` under a bare `go test`. Run tests as `dagger run go test ./...`, or `dagger run go test -run TestName ./...` for a single test.
-- **Opt-in engine tests.** The engine/Sonar tests in `maven/` are skipped unless `TG278_ENGINE_TESTS=1` is set; the Sonar ones also read `TG278_SONAR_*`. See the header of `maven/reuse_engine_test.go`.
+- **Opt-in engine tests.** The engine/Sonar tests in `maven/` are skipped unless `TG278_ENGINE_TESTS=1` is set; the Sonar ones also read `TG278_SONAR_*`. See the header of `maven/reuse_engine_test.go`. The npm registry-auth test in `npm/` is skipped unless `TG331_ENGINE_TESTS=1` is set; see the header of `npm/registry_auth_engine_test.go`.
 - **Check the module compiles with `dagger call`, as in the release gate.** `dagger functions` has listed the functions of a module that `dagger call` then failed to compile. To run a function against a project:
 
   ```sh

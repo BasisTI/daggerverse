@@ -151,6 +151,19 @@ func (o *Orchestrator) CheckQuality(
 	// Opcional: projeto sem o plugin não passa nada e nada muda.
 	// +optional
 	nvdApiKey *dagger.Secret,
+	// Usuário do registro, o mesmo do publish das imagens (ex: EXTERNAL_REGISTRY_USER). Ver
+	// registryPassword.
+	// +optional
+	registryUser string,
+	// Senha do registro, a mesma do publish das imagens (ex: EXTERNAL_REGISTRY_PASSWORD).
+	//
+	// Os targets npm a usam no `npm ci`, para o registro da linha `registry=` do .npmrc do projeto:
+	// o container é hermético, e um registro que exige login (o Nexus) recusa a instalação com
+	// E401. Não fica na imagem, no log nem no cache.
+	//
+	// Opcional: projeto sem target npm, ou com registro público, não passa nada e nada muda.
+	// +optional
+	registryPassword *dagger.Secret,
 ) error {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -163,7 +176,7 @@ func (o *Orchestrator) CheckQuality(
 	if err != nil {
 		return err
 	}
-	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey)
+	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey, registryCredential{user: registryUser, password: registryPassword})
 	if err != nil {
 		return err
 	}
@@ -211,6 +224,13 @@ func (o *Orchestrator) CheckQualityFromReports(
 	// Chave da API do NVD, usada só pelos targets que caem no check completo.
 	// +optional
 	nvdApiKey *dagger.Secret,
+	// Usuário do registro, como em check-quality.
+	// +optional
+	registryUser string,
+	// Senha do registro, como em check-quality. Os targets npm sempre seguem o check completo, que
+	// roda `npm ci`.
+	// +optional
+	registryPassword *dagger.Secret,
 ) error {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -223,7 +243,7 @@ func (o *Orchestrator) CheckQualityFromReports(
 	if err != nil {
 		return err
 	}
-	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey)
+	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey, registryCredential{user: registryUser, password: registryPassword})
 	if err != nil {
 		return err
 	}

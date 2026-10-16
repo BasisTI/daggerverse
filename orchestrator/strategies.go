@@ -95,12 +95,12 @@ func buildStrategy(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Sec
 // cuja imagem sai de um Dockerfile próprio mas cujo código é um projeto Python
 // declara `quality-type = "uv"` e roda checkUv normalmente. Sem `quality-type`,
 // QualityType é igual a Type e o despacho é o de sempre.
-func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
+func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret, npmRegistry registryCredential) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
 	switch rt.QualityType {
 	case config.TypeMaven:
 		return checkMaven(rt, sonarExtra, nvdApiKey), nil
 	case config.TypeNpm:
-		return checkNpm(rt, sonarExtra), nil
+		return checkNpm(rt, sonarExtra, npmRegistry), nil
 	case config.TypeUv:
 		return checkUv(rt, sonarExtra), nil
 	default:
@@ -274,10 +274,22 @@ func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) securityS
 
 // --- npm ---
 
-func npmOpts(rt config.ResolvedTarget) dagger.NpmOpts {
+// registryCredential é o usuário e a senha do registro, os mesmos do publish das imagens
+// (EXTERNAL_REGISTRY_USER/EXTERNAL_REGISTRY_PASSWORD no template). Os targets npm os usam no
+// registro do .npmrc do projeto -- o Nexus da Basis, que não aceita mais leitura anônima.
+type registryCredential struct {
+	user     string
+	password *dagger.Secret
+}
+
+// npmOpts monta as opções do módulo npm. A credencial do registro não vem do TOML: é segredo, e o
+// TOML é versionado. Chega pela invocação, como a do registry das imagens.
+func npmOpts(rt config.ResolvedTarget, registry registryCredential) dagger.NpmOpts {
 	return dagger.NpmOpts{
-		BuildImage: rt.NpmBuildImage,
-		RunImage:   rt.NpmRunImage,
+		BuildImage:       rt.NpmBuildImage,
+		RunImage:         rt.NpmRunImage,
+		RegistryUser:     registry.user,
+		RegistryPassword: registry.password,
 	}
 }
 
@@ -287,7 +299,8 @@ func publishNpm(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*
 		module, commitSha, version, registry, registryUser string,
 		registryPassword *dagger.Secret,
 	) (string, error) {
-		n := dag.Npm(source, npmOpts(rt))
+		// A mesma credencial que publica a imagem autentica o `npm ci` no registro do .npmrc.
+		n := dag.Npm(source, npmOpts(rt, registryCredential{user: registryUser, password: registryPassword}))
 		dockerConfig := n.NewDockerBuildConfig(registry, group, rt.Image, registryUser, registryPassword)
 		result := n.FullBuild(dagger.NpmFullBuildOpts{
 			CommitSha:    commitSha,
@@ -298,12 +311,12 @@ func publishNpm(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*
 	}
 }
 
-func checkNpm(rt config.ResolvedTarget, sonarExtra []string) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkNpm(rt config.ResolvedTarget, sonarExtra []string, npmRegistry registryCredential) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		opts := npmOpts(rt)
+		opts := npmOpts(rt, npmRegistry)
 		opts.ModulePath = moduleSubpath(sourcePath)
 		n := dag.Npm(source, opts)
 		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, rt.SonarProjectKey,

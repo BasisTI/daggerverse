@@ -77,7 +77,7 @@ Prints the SonarQube project key of every target with `sonar = true`, one per li
 
 ==== check-quality
 
-Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`, and the optional `--sonar-branch` / `--all-targets`.
+Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`, the optional `--sonar-branch` / `--all-targets`, and the optional `--registry-user` / `--registry-password` that npm targets use to install from an authenticated registry (see <<npm-registry>>).
 
 Nothing is published, but the build still carries the project's *real* version — the one declared in the version file, from the last publish. Forcing a constant there would pin SonarQube's `PREVIOUS_VERSION` new-code anchor to that constant, and the whole codebase would read as new code forever.
 
@@ -104,6 +104,8 @@ Outside a merge request there is no natural base for the diff, so change detecti
 Detects the targets changed between `--base-branch` and the current commit, builds and publishes each image to `--registry`, applies the `sha-<commit>` tag and returns the list of published images (one per line).
 
 If `--git-remote-url` is given, it bumps the version files of the published targets and commits back to `--git-branch` (defaults to `develop`). It also fails if there are custom targets.
+
+`--registry-user` / `--registry-password` also authenticate the `npm ci` of npm targets against the registry in the project's `.npmrc` (see <<npm-registry>>).
 
 With the GitLab parameters set, the published images are posted as a comment on the merge request the commit came from — no need to open the job and hunt for the refs in the log. See <<mrnotes>>.
 
@@ -145,7 +147,7 @@ It is a separate function, not a flag of `publish-all`, because the return type 
 
 The branch-analysis counterpart of `check-quality`: for each changed target with `sonar = true`, if `--reports` (the directory `publish-all-with-reports` returned) has the target *and the target passes the checks below*, it runs only `sonar:sonar` over it -- no `clean verify`, no tests. The test counts and coverage Sonar records are the ones from the publish build.
 
-It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--sonar-branch` (required: this is a branch analysis), the optional `--reports`, `--stop-on-first-fail` and `--nvd-api-key`. The quality gate is still awaited (`sonar.qualitygate.wait=true`).
+It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--sonar-branch` (required: this is a branch analysis), the optional `--reports`, `--stop-on-first-fail`, `--nvd-api-key`, and `--registry-user` / `--registry-password` (npm targets always take the full path, which runs `npm ci`; see <<npm-registry>>). The quality gate is still awaited (`sonar.qualitygate.wait=true`).
 
 *Checks, per target, before reusing.* Any failure sends that target to the full path (the same as `check-quality`) and logs the reason; the analysis never runs on stale or partial data.
 
@@ -632,7 +634,22 @@ The version is pinned (`sonar-plugin-version`, with a default in the maven modul
 
 === npm
 
-Node.js/Angular projects. Runs `npm ci`, `npm run build`, optional SonarQube analysis, and publishes `dist/` inside an nginx container. Supports version override by patching `package.json`, and commit status reporting.
+Node.js/Angular projects. Runs `npm ci`, `npm run build`, optional SonarQube analysis, and publishes `dist/` inside an nginx container. Supports version override by patching `package.json`, commit status reporting, and a credential for the npm registry (`registry-user` / `registry-password`, see <<npm-registry>>).
+
+[[npm-registry]]
+==== Authenticated npm registry
+
+The build container is hermetic: the project's `.npmrc` says where to install from, but nothing on the runner reaches `npm ci`. When Basis' Nexus (`npm-registry`) stopped accepting anonymous reads on 2026-10-16, every npm target pointing at it failed with `npm ERR! code E401 Unable to authenticate, need: BASIC realm="Sonatype Nexus Repository Manager"`.
+
+*Which credential.* The same user and password that push the images: `--registry-user` / `--registry-password`, which the CI template fills from `EXTERNAL_REGISTRY_USER` / `EXTERNAL_REGISTRY_PASSWORD`. `publish-all` already receives them; `check-quality` and `check-quality-from-reports` take them as optional parameters. One credential already exists in every project, so there is no new CI variable to create and mask. The user therefore needs read access to the npm repository on Nexus.
+
+*Which registry.* The `registry=` line of the `.npmrc` beside the target's `package.json`. No `.npmrc`, or no `registry=` line, means the public registry, and the credential is not used at all: sending it to `registry.npmjs.org` would be a leak. Scoped registries (`@scope:registry=`) are not covered.
+
+*How it reaches npm.* The npm module builds the `_auth` value (base64 of `user:password`) inside the engine and registers it as a new secret, so it is masked in the output like the password it comes from. Only the install exec sees it: a temporary userconfig outside `/app` holds `//<host>/<path>/:_auth=${NPM_REGISTRY_AUTH}` (a reference, not the value), `NPM_CONFIG_USERCONFIG` points at it, and `NPM_REGISTRY_AUTH` is a secret variable. All three are removed right after `npm ci`, so the build, the Sonar stage and the published image never see them, and the published image is still the run image plus `dist/` only. npm's cache stores no request headers, so the cache volume does not keep the credential either.
+
+*Two keys, and `always-auth`.* npm derives the key with `url.resolve(registry, '.')`, which drops the last path segment when the URL has no trailing slash (`https://h/repository/npm-registry` becomes `//h/repository/`), so the module writes the key with and without that segment. It also sets `always-auth` for the key: npm 6 (node 14) only sends the credential to a tarball on another host with it, and a lockfile v1 keeps the tarball URL as it was resolved. The portal-liven `produtosfrontend` lockfile points every tarball at `http://element.basis.com.br/repository/npm-registry`, while its `.npmrc` points at `https://nexus.basis.com.br/...`. npm 7+ ignores `always-auth` and matches credentials by the request URL, so a lockfile with tarballs on another host needs to be regenerated there.
+
+The npm engine test (`TG331_ENGINE_TESTS=1`, see the header of `npm/registry_auth_engine_test.go`) runs the build against a Verdaccio that rejects anonymous reads, on node 22 and on node 14 with a lockfile v1 whose tarballs use a second host name. It checks the E401 without the credential and the build with it, then searches the build container, the image and the npm cache for the fictitious credential.
 
 === uv
 
