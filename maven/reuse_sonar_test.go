@@ -86,7 +86,7 @@ func compareFlows(t *testing.T, e sonarEnv, name string, m *Maven, source *dagge
 		t.Fatalf("fluxo antigo: %v", err)
 	}
 	// O mesmo build serve de base ao novo, sem a análise: o que se compara é a análise.
-	m2 := New(m.Image, m.UseMvnw, m.UseCache, m.UseDefaultCiOptions, m.ExtraOptions, m.ReactorMode, m.UseJib, m.UseDocker, "", nil)
+	m2 := mustNew(New(context.Background(), m.Image, m.UseMvnw, m.UseCache, m.UseDefaultCiOptions, m.ExtraOptions, m.ReactorMode, m.UseJib, m.UseDocker, "", nil, "", "", nil))
 	built, err := m2.FullBuild(ctx, source, module, "", "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("build do fluxo novo: %v", err)
@@ -114,7 +114,7 @@ func compareFlows(t *testing.T, e sonarEnv, name string, m *Maven, source *dagge
 }
 
 func fixtureMaven(opts ...string) *Maven {
-	return New(mavenFixtureImage, false, true, true, opts, false, false, false, "", nil)
+	return mustNew(New(context.Background(), mavenFixtureImage, false, true, true, opts, false, false, false, "", nil, "", "", nil))
 }
 
 func TestEngineSonarAggregate(t *testing.T) {
@@ -143,6 +143,6 @@ func TestEngineSonarTriagemReactor(t *testing.T) {
 		WithExec([]string{"sh", "-c", "mkdir /source; base64 -d /source.b64 | tar -xz -C /source"}).
 		Directory("/source")
 	opts := []string{"-Dtest=CurriculoRecebidoV1Test,TriagemExceptionTest,WikiDoJiraTest", "-Dsurefire.failIfNoSpecifiedTests=false"}
-	m := New(mavenFixtureImage, false, true, true, opts, true, false, false, "", nil)
+	m := mustNew(New(context.Background(), mavenFixtureImage, false, true, true, opts, true, false, false, "", nil, "", "", nil))
 	compareFlows(t, e, "triagem", m, source, "triagem-core", true)
 }

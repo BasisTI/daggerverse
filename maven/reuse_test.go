@@ -275,3 +275,11 @@ func TestAnalysisVerifyFailsClosedWithoutTools(t *testing.T) {
 		})
 	}
 }
+
+// mustNew desempacota o (módulo, erro) do construtor nos testes de engine.
+func mustNew(m *Maven, err error) *Maven {
+	if err != nil {
+		panic(err)
+	}
+	return m
+}

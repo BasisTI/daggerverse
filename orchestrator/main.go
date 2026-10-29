@@ -151,6 +151,10 @@ func (o *Orchestrator) CheckQuality(
 	// Opcional: projeto sem o plugin não passa nada e nada muda.
 	// +optional
 	nvdApiKey *dagger.Secret,
+	// Host do registro a que a credencial pertence (ex: EXTERNAL_REGISTRY_URL). Opcional: sem ele,
+	// vale DefaultRegistryHost. Só o host recebe a credencial dos testes Maven; ver registryPassword.
+	// +optional
+	registry string,
 	// Usuário do registro, o mesmo do publish das imagens (ex: EXTERNAL_REGISTRY_USER). Ver
 	// registryPassword.
 	// +optional
@@ -159,9 +163,12 @@ func (o *Orchestrator) CheckQuality(
 	//
 	// Os targets npm a usam no `npm ci`, para o registro da linha `registry=` do .npmrc do projeto:
 	// o container é hermético, e um registro que exige login (o Nexus) recusa a instalação com
-	// E401. Não fica na imagem, no log nem no cache.
+	// E401. Os targets Maven com use-docker a entregam ao Testcontainers, só para o host de
+	// `registry`: o dind do build não tem o login do runner, e a imagem de teste do Nexus recebe
+	// 401. Não fica na imagem, no log nem no cache.
 	//
-	// Opcional: projeto sem target npm, ou com registro público, não passa nada e nada muda.
+	// Opcional: projeto sem target npm, ou com registro público, e sem use-docker, não passa nada e
+	// nada muda.
 	// +optional
 	registryPassword *dagger.Secret,
 ) error {
@@ -176,7 +183,7 @@ func (o *Orchestrator) CheckQuality(
 	if err != nil {
 		return err
 	}
-	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey, registryCredential{user: registryUser, password: registryPassword})
+	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey, registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword})
 	if err != nil {
 		return err
 	}
@@ -224,6 +231,9 @@ func (o *Orchestrator) CheckQualityFromReports(
 	// Chave da API do NVD, usada só pelos targets que caem no check completo.
 	// +optional
 	nvdApiKey *dagger.Secret,
+	// Host do registro, como em check-quality.
+	// +optional
+	registry string,
 	// Usuário do registro, como em check-quality.
 	// +optional
 	registryUser string,
@@ -243,7 +253,7 @@ func (o *Orchestrator) CheckQualityFromReports(
 	if err != nil {
 		return err
 	}
-	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey, registryCredential{user: registryUser, password: registryPassword})
+	targets, err := qualityTargets(cfg, sonarExtra, nvdApiKey, registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword})
 	if err != nil {
 		return err
 	}

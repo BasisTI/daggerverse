@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"dagger/maven/internal/dagger"
 )
@@ -65,4 +69,72 @@ func (m *Maven) withDocker(container *dagger.Container) *dagger.Container {
 		// the service — and reaching it back through the service binding is unreliable, so every
 		// suite would pay its startup timeout for no gain.
 		WithEnvVariable("TESTCONTAINERS_RYUK_DISABLED", "true")
+}
+
+// dockerAuthConfig monta o DOCKER_AUTH_CONFIG que o Testcontainers lê: o JSON de ~/.docker/config.json
+// com uma única entrada, a do host do registro. Imagem de qualquer outro host é puxada sem
+// credencial, então ela não sai para o Docker Hub nem para um registro de terceiro.
+//
+// O valor é registrado como segredo novo (a senha e o `auth` derivado dela ficam mascarados na
+// saída) e só chega ao container de build por WithSecretVariable. Devolve erro se faltar host ou
+// usuário, em vez de seguir sem autenticar e deixar o 401 aparecer só no teste.
+func dockerAuthConfig(ctx context.Context, host, user string, password *dagger.Secret) (*dagger.Secret, error) {
+	host, err := registryAuthHost(host)
+	if err != nil {
+		return nil, fmt.Errorf("credencial do registro para o Testcontainers: %w", err)
+	}
+	if user == "" {
+		return nil, fmt.Errorf("credencial do registro para o Testcontainers: senha informada sem usuário")
+	}
+	plain, err := password.Plaintext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("credencial do registro para o Testcontainers: ler a senha: %w", err)
+	}
+	contents, err := dockerAuthConfigJSON(host, user, plain)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("🔐 Credencial do registro (usuário %s) entregue ao Testcontainers só para %s\n", user, host)
+	return dag.SetSecret("maven-docker-auth-config", contents), nil
+}
+
+// dockerAuthConfigJSON é o JSON de DOCKER_AUTH_CONFIG para um host: {"auths":{"<host>":{"auth":"<base64 usuário:senha>"}}}.
+func dockerAuthConfigJSON(host, user, password string) (string, error) {
+	out, err := json.Marshal(map[string]any{
+		"auths": map[string]any{
+			host: map[string]string{
+				"auth": base64.StdEncoding.EncodeToString([]byte(user + ":" + password)),
+			},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// registryAuthHost reduz o que o chamador informou ao host (com porta, se houver) que serve de chave
+// em `auths`: sem esquema, sem caminho, em minúsculas e sem o ponto final do DNS. É a chave contra
+// a qual o Testcontainers compara o host da imagem; o que não for um host de registro é recusado,
+// para que um valor torto não vire uma credencial que nunca casa.
+func registryAuthHost(raw string) (string, error) {
+	host := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?#"); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	name, port := host, ""
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		name, port = host[:i], host[i:]
+	}
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || strings.ContainsAny(name, " \t:[]") {
+		return "", fmt.Errorf("host do registro inválido: %q", raw)
+	}
+	return name + port, nil
 }

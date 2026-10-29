@@ -5,6 +5,7 @@ import (
 	"dagger/orchestrator/internal/dagger"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/BasisTI/daggerverse/pipeline"
 	"github.com/BasisTI/daggerverse/pipeline/config"
@@ -95,12 +96,12 @@ func buildStrategy(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Sec
 // cuja imagem sai de um Dockerfile próprio mas cujo código é um projeto Python
 // declara `quality-type = "uv"` e roda checkUv normalmente. Sem `quality-type`,
 // QualityType é igual a Type e o despacho é o de sempre.
-func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret, npmRegistry registryCredential) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
+func qualityStrategy(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret, registry registryCredential) (pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret], error) {
 	switch rt.QualityType {
 	case config.TypeMaven:
-		return checkMaven(rt, sonarExtra, nvdApiKey), nil
+		return checkMaven(rt, sonarExtra, nvdApiKey, registry), nil
 	case config.TypeNpm:
-		return checkNpm(rt, sonarExtra, npmRegistry), nil
+		return checkNpm(rt, sonarExtra, registry), nil
 	case config.TypeUv:
 		return checkUv(rt, sonarExtra), nil
 	default:
@@ -122,10 +123,16 @@ func mavenModule(rt config.ResolvedTarget, target string) string {
 	return target
 }
 
-// mavenOpts monta as opções do módulo maven. A chave do NVD não vem do TOML: é
-// segredo, e o TOML é versionado. Chega pela invocação, como o token do Sonar.
-func mavenOpts(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) dagger.MavenOpts {
+// mavenOpts monta as opções do módulo maven. A chave do NVD e a credencial do registro não vêm do
+// TOML: são segredo, e o TOML é versionado. Chegam pela invocação, como o token do Sonar.
+//
+// A credencial só serve ao Testcontainers de um target com use-docker, e o módulo a ignora nos
+// demais. Quem não roda testes (análise sobre relatórios, inventário) passa registryCredential{}.
+func mavenOpts(rt config.ResolvedTarget, nvdApiKey *dagger.Secret, registry registryCredential) dagger.MavenOpts {
 	return dagger.MavenOpts{
+		RegistryHost:       registry.host,
+		RegistryUser:       registry.user,
+		RegistryPassword:   registry.password,
 		BuildImage:         rt.MavenImage,
 		UseDocker:          rt.UseDocker,
 		ReactorMode:        rt.Reactor,
@@ -151,7 +158,8 @@ func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secr
 		module, commitSha, version, registry, registryUser string,
 		registryPassword *dagger.Secret,
 	) (string, error) {
-		m := dag.Maven(mavenOpts(rt, nvdApiKey))
+		// A credencial que publica a imagem autentica também o pull das imagens de teste.
+		m := dag.Maven(mavenOpts(rt, nvdApiKey, registryCredential{host: registry, user: registryUser, password: registryPassword}))
 		// O DockerBuildConfig do maven recebe a referência completa; a tag fica
 		// embutida nela (jib.to.image aceita ref com tag), de modo que a imagem
 		// devolvida por ImageURL é exatamente a que foi publicada.
@@ -176,12 +184,12 @@ func publishMaven(rt config.ResolvedTarget, group string, nvdApiKey *dagger.Secr
 	}
 }
 
-func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkMaven(rt config.ResolvedTarget, sonarExtra []string, nvdApiKey *dagger.Secret, registry registryCredential) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		m := dag.Maven(mavenOpts(rt, nvdApiKey))
+		m := dag.Maven(mavenOpts(rt, nvdApiKey, registry))
 		// A chave do Sonar vem do target resolvido, não do argumento `module`:
 		// aqui `module` é o path do módulo no reactor, e a chave é o
 		// identificador do projeto no servidor (default: o nome do target).
@@ -207,7 +215,7 @@ func checkMavenFromReports(rt config.ResolvedTarget, sonarExtra []string, nvdApi
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		m := dag.Maven(mavenOpts(rt, nvdApiKey))
+		m := dag.Maven(mavenOpts(rt, nvdApiKey, registryCredential{}))
 		sonarConfig := m.NewSonarConfig(sonarHost, sonarToken, true, sonarExtra,
 			dagger.MavenNewSonarConfigOpts{ProjectKey: rt.SonarProjectKey})
 		result := m.AnalyzeFromReports(mavenSource(source), mavenModule(rt, module), reports, sonarConfig,
@@ -258,7 +266,7 @@ type securityScan func(ctx context.Context, source *dagger.Directory) (*dagger.D
 // um append nela vazaria o -P para os outros builds.
 func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) securityScan {
 	return func(ctx context.Context, source *dagger.Directory) (*dagger.Directory, int, error) {
-		opts := mavenOpts(rt, nvdApiKey)
+		opts := mavenOpts(rt, nvdApiKey, registryCredential{})
 		opts.ExtraOptions = append(append([]string{}, rt.ExtraOptions...),
 			"-P"+SecurityProfile, "-Dformats="+SecurityReportFormats)
 		qt := qualityTarget{Path: rt.Path, MountPath: rt.SourcePath}
@@ -274,10 +282,28 @@ func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) securityS
 
 // --- npm ---
 
-// registryCredential é o usuário e a senha do registro, os mesmos do publish das imagens
-// (EXTERNAL_REGISTRY_USER/EXTERNAL_REGISTRY_PASSWORD no template). Os targets npm os usam no
-// registro do .npmrc do projeto -- o Nexus da Basis, que não aceita mais leitura anônima.
+// DefaultRegistryHost é o registro das imagens da Basis. Vale quando check-quality e
+// check-quality-from-reports não recebem --registry: o template do CI só lhes passa o usuário e a
+// senha, e o host da credencial dos testes Maven precisa vir de algum lugar. O publish-all sempre
+// recebe o host de verdade, e --registry nos dois checks o sobrescreve.
+const DefaultRegistryHost = "basis-registry.basis.com.br"
+
+// registryHostOrDefault devolve o host informado, ou DefaultRegistryHost se vier vazio.
+func registryHostOrDefault(host string) string {
+	if strings.TrimSpace(host) == "" {
+		return DefaultRegistryHost
+	}
+	return host
+}
+
+// registryCredential é o host, o usuário e a senha do registro, os mesmos do publish das imagens
+// (EXTERNAL_REGISTRY_URL/USER/PASSWORD no template). Os targets npm os usam no registro do .npmrc
+// do projeto -- o Nexus da Basis, que não aceita mais leitura anônima --, e os maven com use-docker
+// os entregam ao Testcontainers, só para o host.
+//
+// O host é do registro das imagens; o do npm vem do .npmrc e o npm ignora este campo.
 type registryCredential struct {
+	host     string
 	user     string
 	password *dagger.Secret
 }
@@ -311,12 +337,12 @@ func publishNpm(rt config.ResolvedTarget, group string) pipeline.BuildStrategy[*
 	}
 }
 
-func checkNpm(rt config.ResolvedTarget, sonarExtra []string, npmRegistry registryCredential) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
+func checkNpm(rt config.ResolvedTarget, sonarExtra []string, registry registryCredential) pipeline.QualityStrategy[*dagger.Directory, *dagger.Secret] {
 	return func(
 		ctx context.Context, source *dagger.Directory,
 		module, sourcePath, sonarHost string, sonarToken *dagger.Secret,
 	) error {
-		opts := npmOpts(rt, npmRegistry)
+		opts := npmOpts(rt, registry)
 		opts.ModulePath = moduleSubpath(sourcePath)
 		n := dag.Npm(source, opts)
 		sonarConfig := n.NewSonarConfig(sonarHost, sonarToken, rt.SonarProjectKey,

@@ -56,6 +56,9 @@ type Maven struct {
 	SonarPluginVersion string
 	// API key exported to the build as NVD_API_KEY, for OWASP Dependency-Check
 	NvdApiKey *dagger.Secret
+	// DockerAuthConfig is the DOCKER_AUTH_CONFIG the Testcontainers of the build authenticate their
+	// pulls with: the registry credential, for the registry host only. Nil without a credential.
+	DockerAuthConfig *dagger.Secret
 }
 
 // DefaultSonarPluginVersion is the sonar-maven-plugin release the analysis runs with.
@@ -74,6 +77,7 @@ var DefaultMvnCiOptions = []string{"--batch-mode", "--errors", "-Dmaven.test.fai
 
 // New constructs a Maven helper ready to execute builds with the provided base options.
 func New(
+	ctx context.Context,
 	// image for executing Builds. The default is deliberately not the -alpine variant: alpine is
 	// musl-based and the node binary frontend-maven-plugin downloads is glibc-linked, so frontend
 	// builds die on it.
@@ -117,7 +121,26 @@ func New(
 	// Passed as a Secret, not a string: Dagger keeps it out of the operation graph and out of
 	// the logs, and WithSecretVariable never bakes it into a layer.
 	// +optional
-	nvdApiKey *dagger.Secret) *Maven {
+	nvdApiKey *dagger.Secret,
+	// Host of the registry the registry credential belongs to (e.g. basis-registry.basis.com.br).
+	// Testcontainers authenticates its image pulls on this host and on no other.
+	// +optional
+	registryHost string,
+	// User of the registry credential. See registryPassword.
+	// +optional
+	registryUser string,
+	// Password of the registry credential.
+	//
+	// With useDocker, the Testcontainers of the build pull test images from the private registry
+	// with it: the daemon the module binds is a fresh dind with no login, and a `docker login` on
+	// the runner does not reach it, so such a pull fails with "no basic auth credentials". The
+	// credential is handed over as DOCKER_AUTH_CONFIG, limited to registryHost, in a secret
+	// variable of the build container -- never in clear text in the environment, the logs or the
+	// image.
+	//
+	// Optional: without it, or without useDocker, nothing changes.
+	// +optional
+	registryPassword *dagger.Secret) (*Maven, error) {
 	m := &Maven{
 		Image:               buildImage,
 		UseMvnw:             useMvnw,
@@ -133,7 +156,14 @@ func New(
 	if m.SonarPluginVersion == "" {
 		m.SonarPluginVersion = DefaultSonarPluginVersion
 	}
-	return m
+	if useDocker && registryPassword != nil {
+		auth, err := dockerAuthConfig(ctx, registryHost, registryUser, registryPassword)
+		if err != nil {
+			return nil, err
+		}
+		m.DockerAuthConfig = auth
+	}
+	return m, nil
 }
 
 // NewBaseContainer initializes the base container with caches and the optional Docker daemon.
@@ -147,6 +177,9 @@ func (m *Maven) NewBaseContainer() *dagger.Container {
 	}
 	if m.UseDocker {
 		container = m.withDocker(container)
+		if m.DockerAuthConfig != nil {
+			container = container.WithSecretVariable("DOCKER_AUTH_CONFIG", m.DockerAuthConfig)
+		}
 	}
 	return container
 }
