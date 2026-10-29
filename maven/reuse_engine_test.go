@@ -68,7 +68,7 @@ func sprintfJacoco(configuration string) string {
 func exportedPaths(t *testing.T, source *dagger.Directory, module string) []string {
 	t.Helper()
 	ctx := context.Background()
-	m := New(mavenFixtureImage, false, true, true, nil, false, false, false, "", nil)
+	m := mustNew(New(context.Background(), mavenFixtureImage, false, true, true, nil, false, false, false, "", nil, "", "", nil))
 	built, err := m.FullBuild(ctx, source, module, "", "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("FullBuild: %v", err)
@@ -182,7 +182,7 @@ func assertNoSentinel(t *testing.T, dir *dagger.Directory) {
 func TestEngineFilteredSecretsStayOut(t *testing.T) {
 	engineTest(t)
 	ctx := context.Background()
-	m := New(mavenFixtureImage, false, true, true, nil, false, false, false, "", nil)
+	m := mustNew(New(context.Background(), mavenFixtureImage, false, true, true, nil, false, false, false, "", nil, "", "", nil))
 	built, err := m.FullBuild(ctx, secretsSource(), "secrets", "", "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("FullBuild: %v", err)
@@ -204,7 +204,7 @@ func TestEngineFilterOnBothImageFamilies(t *testing.T) {
 	ctx := context.Background()
 	for _, image := range []string{mavenFixtureImage, mavenFixtureImage + "-alpine"} {
 		t.Run(image, func(t *testing.T) {
-			m := New(image, false, true, true, nil, false, false, false, "", nil)
+			m := mustNew(New(context.Background(), image, false, true, true, nil, false, false, false, "", nil, "", "", nil))
 			tree := dag.Directory()
 			for p, content := range filterFixture {
 				tree = tree.WithNewFile(p, content)

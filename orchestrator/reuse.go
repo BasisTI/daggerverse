@@ -124,7 +124,7 @@ func manifestValidator(cfg *config.Config, reports *dagger.Directory, commitSha 
 		if err != nil {
 			return err.Error()
 		}
-		problem, err := dag.Maven(mavenOpts(rt, nvdApiKey)).AnalysisInputsProblem(ctx, dir.WithoutFile(ManifestName))
+		problem, err := dag.Maven(mavenOpts(rt, nvdApiKey, registryCredential{})).AnalysisInputsProblem(ctx, dir.WithoutFile(ManifestName))
 		if err != nil {
 			return fmt.Sprintf("não foi possível conferir os checksums: %v", err)
 		}

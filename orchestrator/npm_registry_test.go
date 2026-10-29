@@ -35,6 +35,7 @@ func TestNpmOptsLevaCredencial(t *testing.T) {
 // para que uma credencial pela metade (`registryCredential{user: registryUser}`) não passe.
 func TestNpmRecebeCredencialDoRegistro(t *testing.T) {
 	const fromParams = "registryCredential{user: registryUser, password: registryPassword}"
+	const fromCheckParams = "registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword}"
 	read := func(name string) string {
 		src, err := os.ReadFile(name)
 		if err != nil {
@@ -51,7 +52,7 @@ func TestNpmRecebeCredencialDoRegistro(t *testing.T) {
 	allowed := map[string]bool{
 		// publishNpm: a credencial que publica a imagem.
 		"npmOpts(rt, " + fromParams + ")": true,
-		// checkNpm: opts vem de npmOpts(rt, npmRegistry), conferido abaixo.
+		// checkNpm: opts vem de npmOpts(rt, registry), conferido abaixo.
 		"opts": true,
 	}
 	for _, c := range calls {
@@ -59,8 +60,8 @@ func TestNpmRecebeCredencialDoRegistro(t *testing.T) {
 			t.Errorf("dag.Npm(source, %s) não passa a credencial do registro inteira", c[1])
 		}
 	}
-	if !strings.Contains(strategies, "opts := npmOpts(rt, npmRegistry)\n") {
-		t.Errorf("checkNpm não monta opts com npmOpts(rt, npmRegistry)")
+	if !strings.Contains(strategies, "opts := npmOpts(rt, registry)\n") {
+		t.Errorf("checkNpm não monta opts com npmOpts(rt, registry)")
 	}
 	if n := strings.Count(strategies, "npmOpts(rt, "); n != 2 {
 		t.Errorf("npmOpts chamado %d vezes em strategies.go; o teste conhece 2", n)
@@ -69,23 +70,23 @@ func TestNpmRecebeCredencialDoRegistro(t *testing.T) {
 	// No meio da cadeia, qualityTargets repassa a credencial a qualityStrategy, e esta a checkNpm.
 	// Não há como conferir o conteúdo aqui sem engine: a estratégia é uma closure que só chama
 	// dag.Npm quando roda. Então vale o texto exato de cada ligação, uma por arquivo.
-	if n := strings.Count(strategies, "checkNpm(rt, sonarExtra, npmRegistry)"); n != 1 ||
+	if n := strings.Count(strategies, "checkNpm(rt, sonarExtra, registry)"); n != 1 ||
 		strings.Count(strategies, "checkNpm(") != 2 {
-		t.Errorf("qualityStrategy devia repassar npmRegistry a checkNpm, e só por uma chamada")
+		t.Errorf("qualityStrategy devia repassar registry a checkNpm, e só por uma chamada")
 	}
 	targets := read("targets.go")
-	if n := strings.Count(targets, "qualityStrategy(rt, sonarExtra, nvdApiKey, npmRegistry)"); n != 1 ||
+	if n := strings.Count(targets, "qualityStrategy(rt, sonarExtra, nvdApiKey, registry)"); n != 1 ||
 		strings.Count(targets, "qualityStrategy(") != 1 {
-		t.Errorf("qualityTargets devia repassar npmRegistry a qualityStrategy, e só por uma chamada")
+		t.Errorf("qualityTargets devia repassar registry a qualityStrategy, e só por uma chamada")
 	}
-	if !strings.Contains(targets, "nvdApiKey *dagger.Secret, npmRegistry registryCredential)") {
-		t.Errorf("qualityTargets não recebe a credencial como npmRegistry: o teste perdeu o alvo")
+	if !strings.Contains(targets, "nvdApiKey *dagger.Secret, registry registryCredential)") {
+		t.Errorf("qualityTargets não recebe a credencial como registry: o teste perdeu o alvo")
 	}
 
 	// check-quality e check-quality-from-reports repassam os parâmetros a qualityTargets.
 	main := read("main.go")
-	if n := strings.Count(main, "qualityTargets(cfg, sonarExtra, nvdApiKey, "+fromParams+")"); n != 2 ||
+	if n := strings.Count(main, "qualityTargets(cfg, sonarExtra, nvdApiKey, "+fromCheckParams+")"); n != 2 ||
 		strings.Count(main, "qualityTargets(") != 2 {
-		t.Errorf("check-quality e check-quality-from-reports deviam repassar %s a qualityTargets", fromParams)
+		t.Errorf("check-quality e check-quality-from-reports deviam repassar %s a qualityTargets", fromCheckParams)
 	}
 }

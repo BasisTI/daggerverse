@@ -77,7 +77,7 @@ Prints the SonarQube project key of every target with `sonar = true`, one per li
 
 ==== check-quality
 
-Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`, the optional `--sonar-branch` / `--all-targets`, and the optional `--registry-user` / `--registry-password` that npm targets use to install from an authenticated registry (see <<npm-registry>>).
+Runs tests and static analysis on the changed targets that declare `sonar = true`. It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, the optional `--stop-on-first-fail`, the optional `--gitlab-host` / `--gitlab-token` / `--gitlab-project-id` / `--gitlab-ref` for commit statuses, the optional `--merge-request-id` / `--merge-request-source-branch` / `--merge-request-target-branch`, the optional `--sonar-branch` / `--all-targets`, and the optional `--registry-user` / `--registry-password` that npm targets use to install from an authenticated registry (see <<npm-registry>>) and that Maven targets with `use-docker` hand to Testcontainers, together with the optional `--registry` (host of that credential, default `basis-registry.basis.com.br`; see <<maven-registry>>).
 
 Nothing is published, but the build still carries the project's *real* version — the one declared in the version file, from the last publish. Forcing a constant there would pin SonarQube's `PREVIOUS_VERSION` new-code anchor to that constant, and the whole codebase would read as new code forever.
 
@@ -105,7 +105,7 @@ Detects the targets changed between `--base-branch` and the current commit, buil
 
 If `--git-remote-url` is given, it bumps the version files of the published targets and commits back to `--git-branch` (defaults to `develop`). It also fails if there are custom targets.
 
-`--registry-user` / `--registry-password` also authenticate the `npm ci` of npm targets against the registry in the project's `.npmrc` (see <<npm-registry>>).
+`--registry-user` / `--registry-password` also authenticate the `npm ci` of npm targets against the registry in the project's `.npmrc` (see <<npm-registry>>), and the image pulls of the Testcontainers of Maven targets with `use-docker`, on the host of `--registry` (see <<maven-registry>>).
 
 With the GitLab parameters set, the published images are posted as a comment on the merge request the commit came from — no need to open the job and hunt for the refs in the log. See <<mrnotes>>.
 
@@ -147,7 +147,7 @@ It is a separate function, not a flag of `publish-all`, because the return type 
 
 The branch-analysis counterpart of `check-quality`: for each changed target with `sonar = true`, if `--reports` (the directory `publish-all-with-reports` returned) has the target *and the target passes the checks below*, it runs only `sonar:sonar` over it -- no `clean verify`, no tests. The test counts and coverage Sonar records are the ones from the publish build.
 
-It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--sonar-branch` (required: this is a branch analysis), the optional `--reports`, `--stop-on-first-fail`, `--nvd-api-key`, and `--registry-user` / `--registry-password` (npm targets always take the full path, which runs `npm ci`; see <<npm-registry>>). The quality gate is still awaited (`sonar.qualitygate.wait=true`).
+It takes `--base-branch`, `--commit-sha`, `--sonar-host`, `--sonar-token`, `--sonar-branch` (required: this is a branch analysis), the optional `--reports`, `--stop-on-first-fail`, `--nvd-api-key`, and `--registry` / `--registry-user` / `--registry-password` (npm targets always take the full path, which runs `npm ci`; see <<npm-registry>>). Maven targets that take the full path pass the credential to Testcontainers; those analysed from the reports run no tests and need none (see <<maven-registry>>). The quality gate is still awaited (`sonar.qualitygate.wait=true`).
 
 *Checks, per target, before reusing.* Any failure sends that target to the full path (the same as `check-quality`) and logs the reason; the analysis never runs on stale or partial data.
 
@@ -221,7 +221,7 @@ Implemented in `pipeline/config`. Parsing is *strict*: any unknown field is an e
 | Block | Field | Type | Description
 
 | `defaults.maven` | `image` | string | Base image for Maven builds.
-| `defaults.maven` | `use-docker` | bool | Binds a Docker daemon to the build (Testcontainers).
+| `defaults.maven` | `use-docker` | bool | Binds a Docker daemon to the build (Testcontainers). The registry credential, when the job has one, authenticates its pulls (see <<maven-registry>>).
 | `defaults.maven` | `sonar-plugin-version` | string | Version of `sonar-maven-plugin`. Empty uses the maven module's pinned default.
 | `defaults.npm` | `build-image` | string | Build image (e.g. `node:22-alpine`).
 | `defaults.npm` | `run-image` | string | Runtime image (e.g. `nginx:alpine`).
@@ -631,6 +631,25 @@ Outside reactor mode the version is applied with `versions:set`; in reactor mode
 The scanner is invoked by full coordinates -- `org.sonarsource.scanner.maven:sonar-maven-plugin:<version>:sonar` -- rather than through the `sonar:sonar` prefix. The prefix only resolves when the project declares the plugin, since it is not in Maven's default pluginGroups, and that implicit dependency broke projects not generated by JHipster.
 
 The version is pinned (`sonar-plugin-version`, with a default in the maven module) for two reasons: a new SonarSource release must not break every pipeline overnight without a commit anywhere, and the scanner has to stay compatible with the server, which upgrades on its own schedule. As a consequence, the `<version>` declared in the pom no longer influences which scanner runs -- whoever needs a different one declares it in `ci/pipeline.toml`.
+
+[[maven-registry]]
+==== Test images from the private registry
+
+With `use-docker`, the module binds a `docker:29-dind` of its own to the build. That daemon starts empty: the `docker login` of the runner does not reach it, so a Testcontainers suite that pulls an image from Basis' Nexus (`basis-registry.basis.com.br`) failed with `no basic auth credentials` (401). The suite then failed without failing the build, because the CI options carry `-Dmaven.test.failure.ignore=true`.
+
+*Which credential.* The one that already reaches the orchestrator: `--registry-user` / `--registry-password`, which the CI template fills from `EXTERNAL_REGISTRY_USER` / `EXTERNAL_REGISTRY_PASSWORD`. There is no new CI variable. The user therefore needs read access to the images the tests pull.
+
+*Which host.* The credential belongs to one host. `publish-all` and `publish-all-with-reports` use `--registry`, which they already require. `check-quality` and `check-quality-from-reports` take an optional `--registry` and, without it, use `basis-registry.basis.com.br` (`DefaultRegistryHost` in the orchestrator), because the CI template does not pass the host to them. So a project on the Basis registry needs nothing in the template beyond the user and password it already sends; a different registry needs `--registry "$EXTERNAL_REGISTRY_URL"` on the two checks.
+
+*How it reaches Testcontainers.* The maven module (`registry-host`, `registry-user`, `registry-password`, all optional) builds `{"auths":{"<host>":{"auth":"<base64 user:password>"}}}` inside the engine, registers it as a new secret (masked in the output like the password it comes from) and sets it on the build container with `WithSecretVariable` as `DOCKER_AUTH_CONFIG`, which is where Testcontainers reads registry credentials from. Never `WithEnvVariable`, never a log line, never part of a cache key, and never in an image. The host is normalised first (scheme, path, user info, case, port-less trailing DNS dot), so `https://Basis-Registry.basis.com.br/` and `basis-registry.basis.com.br` give the same key.
+
+*Only that host.* `auths` has one entry. An image from Docker Hub, `quay.io` or any other host is pulled without credential, and so are look-alikes (`outro-<host>`, `<host>.evil.test`): Testcontainers matches the image's registry name against the key exactly. The credential reaches every image on that host, as the npm credential reaches every URL on its host: it is a server Basis controls.
+
+*When it is off.* Without a password, without `use-docker`, or on a path that is not handed the credential (the analysis of `check-quality-from-reports` from reports and the report inventory run no tests; the security scan (`security-check`) does run `verify`, but its function takes no registry parameters yet, so its Testcontainers suites still pull anonymously) the module mounts nothing and the build is the one it always was. A password without user, or without host, fails fast with an explicit message instead of building unauthenticated and showing a 401 inside the test.
+
+*Limits.* The variable is visible to every `mvn` run of the build, not only to the test phase, so a project test that dumps its environment would print `DOCKER_AUTH_CONFIG` (Dagger masks the secret value in the logs, but not the base64 a test might derive). The dind is private to the build and discarded with it. Testcontainers older than 1.21 cannot talk to Docker 29 at all (`Could not find a valid Docker environment`), independently of this credential; a project that fails with that message needs a newer Testcontainers.
+
+The engine test (`TG356_ENGINE_TESTS=1`, see the header of `maven/registry_auth_engine_test.go`) runs a real build with `use-docker` whose JUnit test asks Testcontainers' own `RegistryAuthLocator` which credential it would use for the image of each host. It must find the fictitious credential for the registry host (given as `https://REGISTRO.../`, to cover the normalisation) and nothing for Docker Hub, `quay.io` and the look-alikes; without a credential it must find nothing and `DOCKER_AUTH_CONFIG` must be unset. Afterwards it searches the module tree, the stage output and the declared environment of the container for the password and its base64. It does not pull an image from an authenticated registry: that needs the dind to reach, and trust, a registry with login, which the module does not expose.
 
 === npm
 
