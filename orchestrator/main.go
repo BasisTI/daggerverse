@@ -377,6 +377,11 @@ func (o *Orchestrator) SecurityCheck(
 	// Opcional: sem ela, ou sem use-docker, nada muda.
 	// +optional
 	registryPassword *dagger.Secret,
+	// Imagem com a base NVD pronta (ver update-security-data). Usada quando há credencial do
+	// registro: o scan roda com autoUpdate desligado e não fala com a API da NVD. Sem credencial,
+	// o scan atualiza a base pela API, com aviso no log.
+	// +default="basis-registry.basis.com.br/basis/iac/nvd-data/odc-data:13"
+	securityDataImage string,
 ) (*dagger.Directory, error) {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -385,14 +390,25 @@ func (o *Orchestrator) SecurityCheck(
 	if err := errCustomTargets(cfg, "security-check"); err != nil {
 		return nil, err
 	}
-	targets, err := securityTargets(cfg, nvdApiKey, registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword})
-	if err != nil {
-		return nil, err
-	}
+	cred := registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword}
 	out := dag.Directory()
-	if len(targets) == 0 {
+	if probe, err := securityTargets(cfg, nvdApiKey, cred, nil); err != nil {
+		return nil, err
+	} else if len(probe) == 0 {
 		fmt.Println("✅ Nenhum target Maven. Nada a varrer.")
 		return out, nil
+	}
+	var securityData *dagger.Directory
+	if useImage, notice := securityDataPlan(cred); useImage {
+		if securityData, err = securityDataDirectory(ctx, securityDataImage, cred); err != nil {
+			return nil, err
+		}
+	} else {
+		fmt.Println(notice)
+	}
+	targets, err := securityTargets(cfg, nvdApiKey, cred, securityData)
+	if err != nil {
+		return nil, err
 	}
 	names := make([]string, len(targets))
 	for i, t := range targets {

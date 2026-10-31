@@ -188,6 +188,36 @@ Every promotion walks *all* of the project's images, not only the ones that chan
 
 The version comes from the source image's `org.opencontainers.image.version` label, read by the engine with `--registry-user`/`--registry-password` on `--src-registry`. The `crane` login does not cover that read: without the explicit credential the engine fell back to whatever it had (a cached resolution, the host's login), and the same image that resolved in the morning failed in the afternoon with `no basic auth credentials`.
 
+[[security-data]]
+==== security-check and update-security-data: the NVD database lives in an image
+
+`security-check` runs OWASP Dependency-Check on every Maven target. The scan needs the NVD database (about 417 thousand records), and downloading it through the public API takes 2.5 hours at best and dies with HTTP 503. The database used to live only in the engine's `maven-cache` volume, and engine v0.21 wipes every cache volume after any unclean stop (reboot, OOM, kill). After that wipe each scan restarted the full download inside the same `mvn clean verify`, after the test suite, and an interrupted download keeps nothing: pipelines #20866 and #21208 of colaboradados failed that way, and the cache could never warm up again by itself.
+
+*The decision.* The database is published as an OCI image by one dedicated job, and the scan pulls it and runs offline.
+
+. `update-security-data` (project `basis/iac/nvd-data`, scheduled daily, `resource_group`, 4 h timeout) pulls the previous image, runs `dependency-check-maven:update-only` seeded with it (incremental, minutes; only the bootstrap pays the hours), and publishes `basis-registry.basis.com.br/basis/iac/nvd-data/odc-data:13`. The tag is the ODC major version, because the H2 schema changes between majors. The label `org.opencontainers.image.created` carries the update instant. `update-only` also refreshes RetireJS, CISA KEV and the hosted suppressions, since the consumers no longer fetch anything.
+. `security-check`, when it has the registry credential (`--registry-user`/`--registry-password`, the same one `check-quality` takes), calls `orchestrator-utils.SecurityData`, which pulls the image (`--security-data-image`, default above) and passes the directory to `maven.SecurityScan(securityData: ...)`. The module mounts it at `/odc-data`, outside the cache volume, and adds `-DdataDirectory=/odc-data -DautoUpdate=false` after the module's own options. The scan never talks to the NVD API, so an NVD outage cannot break it.
+
+*Freshness.* `SecurityData` reads the label. Older than 48 h: a warning in the log, the scan goes on. Older than 7 days: a technical failure, red, with a message that says the `nvd-data` job is broken and that this is not a CVE finding. A missing or unreadable label is also a failure, never "fresh".
+
+*Fallback.* Without the registry credential the scan keeps the old behaviour (Dependency-Check updates through the NVD API) and logs a warning saying so. With the credential, a failing pull (image missing, 401, unreadable label) fails the job with an explicit message; falling back silently to the full download is exactly what this design exists to prevent. `NVD_API_KEY` therefore stays mandatory on `security-check` while the fallback exists.
+
+*Bootstrap.* `update-security-data` treats a missing image (`MANIFEST_UNKNOWN`/404) as the bootstrap and any other pull error (401, network) as a failure. The image must exist before a project moves to an orchestrator version with this behaviour, or its scan fails by the rule above.
+
+*Secrets.* `NVD_API_KEY` exists only in the `nvd-data` job, as a `Secret` and a secret environment variable (`-DnvdApiKeyEnvironmentVariable=NVD_API_KEY`, never `-DnvdApiKey=`). Before publishing, the database is searched for the key's value and the publication aborts if it appears. The registry credential only reaches the engine through `WithRegistryAuth`.
+
+*Plugin property names* (checked against `plugin.xml` of dependency-check-maven 13.0.0): `dataDirectory`, `autoUpdate`, `nvdMaxRetryCount`, `nvdApiDelay`, `nvdApiKeyEnvironmentVariable`, `retireJsForceUpdate`. The `update-only` goal has `requiresProject=false`, so it runs in a directory with no pom. A `<dataDirectory>` or `<autoUpdate>` written in the project's pom beats the command line; the pom of colaboradados sets neither.
+
+*Alternatives rejected.*
+
+* Raw repository in Nexus: needs a write credential in every project, concurrent writers are last-writer-wins, and the module would need `curl`.
+* GitLab generic package: tied to a single project.
+* S3/MinIO: a new credential to distribute.
+* A mirror through `nvdDatafeedUrl`: infrastructure to maintain, and each scan would still build the H2 from the feed.
+* Baking the database into the build image: couples ODC to the Maven image.
+* Only a separate cache volume: the engine wipe erases it too.
+* Keeping `autoUpdate` in the scan: a 503 keeps breaking it, or `failOnError=false` hides a technical failure behind a green job.
+
 [[schema]]
 == The `ci/pipeline.toml` schema
 
@@ -691,3 +721,5 @@ Git and registry utilities used by the orchestrator: change detection between br
 All Git operations run inside an `alpine/git` container; image operations use https://github.com/google/go-containerregistry/tree/main/cmd/crane[crane].
 
 `security-report-index` takes the directory produced by `security-check` (`<target>/exit-code`, `<target>/**/dependency-check-report.{html,json}`, `<target>/**/dependency-check-junit.xml`, optional `FAILED`) and returns it with the empty reports (HTML, JSON and JUnit) removed -- the parent/aggregator pom that `-am` pulls into the reactor reports 0 dependencies -- plus an `index.html` (one row per report: target, module, dependencies, vulnerable dependencies, CVEs by severity, target status, link) a `summary.json` with the same data, and a self-contained shields-style `badge.svg` (`CVE | 40 críticas · 102 altas` in red when there is a critical, orange for highs only, yellow for medium/low only, `sem achados` in green, `falhou` in grey when a target failed and no report was produced). `security-check` asks Dependency-Check for `HTML,JSON,JUNIT`: the JUnit report feeds the pipeline *Tests* tab in GitLab CE, which has no security dashboard and, for a scheduled scan, no merge request either. It lives here rather than in `orchestrator` so that a project-local orchestrator (`DAGGER_MODULE: "."`) implementing the same `security-check` contract can call `dag.OrchestratorUtils().SecurityReportIndex(dir)` instead of duplicating it. Severity is normalised to CRITICAL/HIGH/MEDIUM/LOW (`moderate` counts as MEDIUM); anything else is counted as OTHER in `summary.json`.
+
+`security-data` pulls the NVD database image, reads its `org.opencontainers.image.created` label, warns above 48 h, fails above 7 days (`--warn-after-hours`, `--fail-after-hours`) and returns the data directory. It is here, and not in `orchestrator`, for the same reason as `security-report-index`: a project-local orchestrator can call `dag.OrchestratorUtils().SecurityData(...)` without copying the logic. See <<security-data>>.
