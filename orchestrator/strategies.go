@@ -261,20 +261,23 @@ type securityScan func(ctx context.Context, source *dagger.Directory) (*dagger.D
 // Usa SecurityScan, e não FullBuild, porque FullBuild descarta o container quando o mvn falha
 // -- e com ele o relatório, que é o que o build vermelho tem de mais útil.
 //
+// securityData, quando não nulo, é a base NVD pronta: o módulo maven a monta e desliga o
+// autoUpdate do plugin. Nulo, o plugin atualiza a base sozinho (o modo sem credencial).
+//
 // A credencial do registro vai ao Testcontainers do `verify` (target com use-docker), como no check
 // completo; sem ela o módulo maven não monta nada.
 //
 // ExtraOptions é reconstruída em vez de ter o perfil anexado: rt.ExtraOptions vem do
 // pipeline.toml e é compartilhada por todos os targets resolvidos da mesma config, então
 // um append nela vazaria o -P para os outros builds.
-func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret, registry registryCredential) securityScan {
+func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret, registry registryCredential, securityData *dagger.Directory) securityScan {
 	return func(ctx context.Context, source *dagger.Directory) (*dagger.Directory, int, error) {
 		opts := mavenOpts(rt, nvdApiKey, registry)
 		opts.ExtraOptions = append(append([]string{}, rt.ExtraOptions...),
 			"-P"+SecurityProfile, "-Dformats="+SecurityReportFormats)
 		qt := qualityTarget{Path: rt.Path, MountPath: rt.SourcePath}
 		result := dag.Maven(opts).SecurityScan(mavenSource(source), mavenModule(rt, rt.Name),
-			dagger.MavenSecurityScanOpts{ModulePath: qualityModulePath(rt, qt.EffectiveMountPath(rt.Name))})
+			dagger.MavenSecurityScanOpts{ModulePath: qualityModulePath(rt, qt.EffectiveMountPath(rt.Name)), SecurityData: securityData})
 		exitCode, err := result.ExitCode(ctx)
 		if err != nil {
 			return nil, 0, err

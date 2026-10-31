@@ -506,7 +506,7 @@ func TestSecurityTargetsAreMavenInOrder(t *testing.T) {
 	for _, fixture := range allFixtures {
 		t.Run(fixture, func(t *testing.T) {
 			cfg := loadTestdata(t, fixture)
-			targets, err := securityTargets(cfg, nil, registryCredential{})
+			targets, err := securityTargets(cfg, nil, registryCredential{}, nil)
 			if err != nil {
 				t.Fatalf("securityTargets: %v", err)
 			}

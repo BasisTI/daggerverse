@@ -83,7 +83,7 @@ type securityTarget struct {
 // Os outros quality-types são ignorados em silêncio por enquanto: não existe equivalente
 // do perfil em npm ou uv, e falhar neles transformaria "ainda não implementado" em
 // agendamento vermelho toda semana.
-func securityTargets(cfg *config.Config, nvdApiKey *dagger.Secret, registry registryCredential) ([]securityTarget, error) {
+func securityTargets(cfg *config.Config, nvdApiKey *dagger.Secret, registry registryCredential, securityData *dagger.Directory) ([]securityTarget, error) {
 	var targets []securityTarget
 	for _, name := range cfg.TargetNames() {
 		rt, err := cfg.Resolve(name)
@@ -93,7 +93,7 @@ func securityTargets(cfg *config.Config, nvdApiKey *dagger.Secret, registry regi
 		if rt.QualityType != config.TypeMaven {
 			continue
 		}
-		targets = append(targets, securityTarget{name: rt.Name, scan: securityMaven(rt, nvdApiKey, registry)})
+		targets = append(targets, securityTarget{name: rt.Name, scan: securityMaven(rt, nvdApiKey, registry, securityData)})
 	}
 	return targets, nil
 }

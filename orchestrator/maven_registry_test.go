@@ -71,10 +71,10 @@ func TestMavenRecebeCredencialDoRegistro(t *testing.T) {
 	if !strings.Contains(strategies, "opts := mavenOpts(rt, nvdApiKey, registry)\n\t\topts.ExtraOptions") {
 		t.Error("securityMaven não repassa a credencial do registro ao módulo maven")
 	}
-	if !strings.Contains(read("targets.go"), "scan: securityMaven(rt, nvdApiKey, registry)") {
+	if !strings.Contains(read("targets.go"), "scan: securityMaven(rt, nvdApiKey, registry, securityData)") {
 		t.Error("securityTargets não repassa a credencial a securityMaven")
 	}
-	if !strings.Contains(read("main.go"), "securityTargets(cfg, nvdApiKey, registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword})") {
+	if !strings.Contains(read("main.go"), "cred := registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword}") {
 		t.Error("SecurityCheck não monta a credencial a partir de --registry/--registry-user/--registry-password")
 	}
 	if !strings.Contains(read("reuse.go"), "mavenOpts(rt, nvdApiKey, registryCredential{})") {
