@@ -261,12 +261,15 @@ type securityScan func(ctx context.Context, source *dagger.Directory) (*dagger.D
 // Usa SecurityScan, e não FullBuild, porque FullBuild descarta o container quando o mvn falha
 // -- e com ele o relatório, que é o que o build vermelho tem de mais útil.
 //
+// A credencial do registro vai ao Testcontainers do `verify` (target com use-docker), como no check
+// completo; sem ela o módulo maven não monta nada.
+//
 // ExtraOptions é reconstruída em vez de ter o perfil anexado: rt.ExtraOptions vem do
 // pipeline.toml e é compartilhada por todos os targets resolvidos da mesma config, então
 // um append nela vazaria o -P para os outros builds.
-func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret) securityScan {
+func securityMaven(rt config.ResolvedTarget, nvdApiKey *dagger.Secret, registry registryCredential) securityScan {
 	return func(ctx context.Context, source *dagger.Directory) (*dagger.Directory, int, error) {
-		opts := mavenOpts(rt, nvdApiKey, registryCredential{})
+		opts := mavenOpts(rt, nvdApiKey, registry)
 		opts.ExtraOptions = append(append([]string{}, rt.ExtraOptions...),
 			"-P"+SecurityProfile, "-Dformats="+SecurityReportFormats)
 		qt := qualityTarget{Path: rt.Path, MountPath: rt.SourcePath}

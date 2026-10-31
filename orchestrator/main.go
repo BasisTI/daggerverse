@@ -360,6 +360,23 @@ func (o *Orchestrator) SecurityCheck(
 	// Se true, para no primeiro target que falhar. Os targets seguintes ficam sem relatório.
 	// +default=false
 	stopOnFirstFail bool,
+	// Host do registro a que a credencial pertence (ex: EXTERNAL_REGISTRY_URL). Opcional: sem ele,
+	// vale DefaultRegistryHost. Só o host recebe a credencial dos testes Maven; ver registryPassword.
+	// +optional
+	registry string,
+	// Usuário do registro, o mesmo do publish das imagens (ex: EXTERNAL_REGISTRY_USER). Ver
+	// registryPassword.
+	// +optional
+	registryUser string,
+	// Senha do registro, o mesmo segredo do publish das imagens (ex: EXTERNAL_REGISTRY_PASSWORD).
+	//
+	// Os targets Maven com use-docker a entregam ao Testcontainers, só para o host de `registry`: o
+	// dind do build não tem o login do runner, e a imagem de teste do Nexus recebe 401. Não fica na
+	// imagem, no log nem no cache.
+	//
+	// Opcional: sem ela, ou sem use-docker, nada muda.
+	// +optional
+	registryPassword *dagger.Secret,
 ) (*dagger.Directory, error) {
 	cfg, err := o.loadConfig(ctx)
 	if err != nil {
@@ -368,7 +385,7 @@ func (o *Orchestrator) SecurityCheck(
 	if err := errCustomTargets(cfg, "security-check"); err != nil {
 		return nil, err
 	}
-	targets, err := securityTargets(cfg, nvdApiKey)
+	targets, err := securityTargets(cfg, nvdApiKey, registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword})
 	if err != nil {
 		return nil, err
 	}
