@@ -63,13 +63,19 @@ func TestMavenRecebeCredencialDoRegistro(t *testing.T) {
 		}
 	}
 	if got := strings.Count(strategies, "dag.Maven("); got != 4 {
-		t.Errorf("dag.Maven( aparece %d vezes em strategies.go; o teste conhece 4 (as 3 acima e a varredura de segurança)", got)
+		t.Errorf("dag.Maven( aparece %d vezes em strategies.go; o teste conhece 4 (as 3 acima e a varredura de segurança, que recebe a credencial como o check completo)", got)
 	}
 	if !strings.Contains(strategies, "checkMaven(rt, sonarExtra, nvdApiKey, registry), nil") {
 		t.Error("qualityStrategy não repassa a credencial a checkMaven")
 	}
-	if !strings.Contains(strategies, "opts := mavenOpts(rt, nvdApiKey, registryCredential{})") {
-		t.Error("securityMaven mudou: a varredura de segurança deveria seguir sem credencial (ver README)")
+	if !strings.Contains(strategies, "opts := mavenOpts(rt, nvdApiKey, registry)\n\t\topts.ExtraOptions") {
+		t.Error("securityMaven não repassa a credencial do registro ao módulo maven")
+	}
+	if !strings.Contains(read("targets.go"), "scan: securityMaven(rt, nvdApiKey, registry)") {
+		t.Error("securityTargets não repassa a credencial a securityMaven")
+	}
+	if !strings.Contains(read("main.go"), "securityTargets(cfg, nvdApiKey, registryCredential{host: registryHostOrDefault(registry), user: registryUser, password: registryPassword})") {
+		t.Error("SecurityCheck não monta a credencial a partir de --registry/--registry-user/--registry-password")
 	}
 	if !strings.Contains(read("reuse.go"), "mavenOpts(rt, nvdApiKey, registryCredential{})") {
 		t.Error("o inventário de reuse.go perdeu a chamada sem credencial")
