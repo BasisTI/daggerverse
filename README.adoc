@@ -180,6 +180,19 @@ Checks that every image derived from the configuration already exists in the reg
 
 Custom targets are *not* skipped here: their images live in the registry and need to be checked like any other.
 
+==== check-flyway-migrations
+
+Fails a merge request that adds a Flyway migration whose version is repeated or lower than the last one on the target branch. It takes `--base-branch` (defaults to `origin/develop`) and makes no network calls; it does not read `ci/pipeline.toml`.
+
+The US suffix in the version avoids two branches picking the same number, but not the merge order: two branches can pick different versions and the one that lands last ends up behind the other. Flyway refuses a repeated version and, for a lower one, ignores it or aborts depending on `outOfOrder`. The check catches both before the merge.
+
+* *What is compared.* The files the branch adds (`git diff --diff-filter=A <base>...HEAD`) against the files of the target branch. Only versioned migrations, `V<version>__<name>.sql` under a `db/migration` directory, count; repeatable (`R__`) and undo (`U__`) files are ignored, and so are edits to existing migrations.
+* *One history per directory.* The main history (`db/migration`) and each Spring Modulith module history (`db/migration/<module>`) are compared apart. New migrations of the same directory also collide with each other.
+* *Version order is Flyway's.* Parts split by `.` or `_`, compared numerically part by part, leading zeros ignored, so `V1_1` equals `V1.1` and is greater than `V1`. Old versions without a suffix, 12-digit and 14-digit timestamps all coexist; as numbers, a 12-digit timestamp is always lower than a 14-digit one, so a new 12-digit migration after a 14-digit one fails.
+* *Message.* Names the offending file, its version and the last version on the target branch with the file that holds it.
+
+A project without versioned migrations is not affected: the function prints `Migrações Flyway em ordem.` Adopting it in a project's pipeline is up to the CI template and is out of scope here.
+
 ==== promote
 
 Promotes the images derived from the configuration from `--src-registry` to `--dst-registry` (which, when empty, is `--src-registry` itself). Like `check-images`, it covers custom targets' images too.
