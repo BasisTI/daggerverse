@@ -56,7 +56,7 @@ func TestCheckFlywayMigrations(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.nome, func(t *testing.T) {
-			got := checkFlywayMigrations(c.existing, c.added)
+			got := checkFlywayMigrations(c.existing, c.added, nil)
 			if c.want == nil {
 				if len(got) != 0 {
 					t.Fatalf("esperava aprovar, veio %v", got)
@@ -70,6 +70,49 @@ func TestCheckFlywayMigrations(t *testing.T) {
 				if !strings.Contains(got[0], w) {
 					t.Errorf("violação %q não contém %q", got[0], w)
 				}
+			}
+		})
+	}
+}
+
+func TestCheckFlywayMigrationsComRemovidos(t *testing.T) {
+	cases := []struct {
+		nome     string
+		existing []string
+		added    []string
+		removed  []string
+		want     []string // vazio: aprova
+	}{
+		{"MR empilhada: arquivo já na branch-alvo não é novo",
+			[]string{mig + "V6__a.sql", mig + "V7__b.sql"}, []string{mig + "V6__a.sql"}, nil, nil},
+		{"nome com acento reprova",
+			[]string{mig + "V7__a.sql"}, []string{mig + "V2__criação.sql"}, nil, []string{"V2__criação.sql", "menor"}},
+		{"renomear migração aplicada não diz repetida",
+			[]string{mig + "V1__x.sql"}, []string{mig + "V001__x.sql"}, []string{mig + "V1__x.sql"},
+			[]string{mig + "V001__x.sql", "renomeia", mig + "V1__x.sql", "não se renomeia"}},
+		{"repetida de arquivo que a MR não apagou segue dizendo repetida",
+			[]string{mig + "V1__x.sql", mig + "V2__y.sql"}, []string{mig + "V2__z.sql"}, []string{mig + "V1__x.sql"},
+			[]string{"repetida"}},
+	}
+	for _, c := range cases {
+		t.Run(c.nome, func(t *testing.T) {
+			got := checkFlywayMigrations(c.existing, c.added, c.removed)
+			if len(c.want) == 0 {
+				if len(got) != 0 {
+					t.Fatalf("esperava aprovar, veio %v", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("esperava 1 violação, veio %v", got)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(got[0], w) {
+					t.Errorf("violação %q não contém %q", got[0], w)
+				}
+			}
+			if strings.Contains(c.nome, "não diz repetida") && strings.Contains(got[0], "repetida") {
+				t.Errorf("a mensagem de renomeação não pode dizer repetida: %q", got[0])
 			}
 		})
 	}

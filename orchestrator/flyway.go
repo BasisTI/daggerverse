@@ -82,7 +82,18 @@ func compareFlywayParts(a, b []string) int {
 // reprova se a versão já existe no histórico (na branch-alvo ou em outra migração nova) ou se é
 // menor que a última da branch-alvo: o Flyway recusa a primeira em qualquer ambiente e, na
 // segunda, a ignora ou aborta conforme `outOfOrder`.
-func checkFlywayMigrations(existing, added []string) []string {
+//
+// removed são os arquivos da branch-alvo que a própria branch apaga ou renomeia: continuam
+// valendo como já usados -- a migração pode estar aplicada --, mas a mensagem fala em renomeação.
+func checkFlywayMigrations(existing, added, removed []string) []string {
+	onTarget := map[string]bool{}
+	for _, p := range existing {
+		onTarget[p] = true
+	}
+	gone := map[string]bool{}
+	for _, p := range removed {
+		gone[p] = true
+	}
 	last := map[string]flywayMigration{}
 	seen := map[string][]flywayMigration{}
 	for _, p := range existing {
@@ -96,6 +107,10 @@ func checkFlywayMigrations(existing, added []string) []string {
 
 	var news []flywayMigration
 	for _, p := range added {
+		// MR empilhada depois do squash da anterior: o arquivo já está na branch-alvo e não é novo.
+		if onTarget[p] {
+			continue
+		}
 		if m, ok := parseFlywayMigration(p); ok {
 			news = append(news, m)
 		}
@@ -113,6 +128,9 @@ func checkFlywayMigrations(existing, added []string) []string {
 		}
 		l, hasLast := last[n.dir]
 		switch {
+		case dup != nil && gone[dup.path]:
+			out = append(out, fmt.Sprintf("%s: a versão %s era de %s, que esta MR apaga ou renomeia; "+
+				"migração aplicada não se renomeia (volte o arquivo ao nome original)", n.path, n.version, dup.path))
 		case dup != nil:
 			msg := fmt.Sprintf("%s: versão %s repetida (já usada por %s)", n.path, n.version, dup.path)
 			if hasLast {
@@ -149,16 +167,21 @@ func (o *Orchestrator) CheckFlywayMigrations(
 		WithWorkdir("/src").WithDirectory("/src", o.Source).
 		WithExec([]string{"git", "config", "--global", "--add", "safe.directory", "/src"})
 
-	existing, err := gitLines(ctx, ctr, "ls-tree", "-r", "--name-only", baseBranch)
+	existing, err := gitLines(ctx, ctr, "-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", baseBranch)
 	if err != nil {
 		return "", fmt.Errorf("não foi possível listar os arquivos de %s: %w", baseBranch, err)
 	}
-	added, err := gitLines(ctx, ctr, "diff", "--no-renames", "--name-only", "--diff-filter=A", baseBranch+"...HEAD")
+	added, err := gitLines(ctx, ctr, "-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "--diff-filter=A", baseBranch+"...HEAD")
 	if err != nil {
 		return "", fmt.Errorf("não foi possível listar os arquivos novos da branch: %w", err)
 	}
 
-	violations := checkFlywayMigrations(existing, added)
+	removed, err := gitLines(ctx, ctr, "-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "--diff-filter=D", baseBranch+"...HEAD")
+	if err != nil {
+		return "", fmt.Errorf("não foi possível listar os arquivos removidos pela branch: %w", err)
+	}
+
+	violations := checkFlywayMigrations(existing, added, removed)
 	if len(violations) > 0 {
 		return "", fmt.Errorf("migração Flyway fora de ordem:\n  %s", strings.Join(violations, "\n  "))
 	}
