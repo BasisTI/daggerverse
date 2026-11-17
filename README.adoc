@@ -581,7 +581,7 @@ In practice: `DAGGER_MODULE` references `...daggerverse/orchestrator@3.0.0`, whi
 
 `publish-all` bumps the version files and commits back to the branch. That commit *must not* trigger a new pipeline, on pain of an infinite loop.
 
-Suppression is done *exclusively* through the push option, in `CommitAndPush` (`orchestrator-utils`):
+Suppression is done *exclusively* through the push option, in the bump push of `orchestrator-utils` (`BumpAndCommitVersions`, shared with `CommitAndPush`):
 
 [source,shell]
 ----
@@ -589,6 +589,17 @@ git push -o ci.skip <remote> HEAD:<branch>
 ----
 
 The commit message is just `Bump versão para <version>`, *without* the `[skip ci]` prefix. The prefix was removed on purpose: `[skip ci]` in the message is honoured by GitLab on merge request pipelines too, so a merge request containing the bump commit would have its pipeline blocked — `check-quality` included. The push option, by contrast, only affects the push that produced it.
+
+=== Bump on top of the remote head
+
+The bump commit is not made on the pipeline checkout. `BumpAndCommitVersions` (`orchestrator-utils`) reapplies it on the current remote head, so a merge into the branch while `publish-develop` runs does not fail the job:
+
+. `git fetch <remote> <branch>` and checkout of `FETCH_HEAD`, with a `CACHE_BUSTER` so Dagger does not reuse an earlier fetch.
+. Each version file is read from that head, not from the pipeline source.
+. Monotonic guard: a file is written only if the pipeline version is greater than the file's (CalVer `YYYY.MM.DD.IID`, compared numerically part by part). A file version that cannot be parsed is overwritten, as before. If no file changes, there is no commit and no error, so two pipelines of the same target finishing out of order leave the greater version in place.
+. Commit `Bump versão para <version>` and `git push -o ci.skip`. If the push is refused as non-fast-forward, the flow restarts from the fetch, up to 4 attempts. Any other push failure fails the job.
+
+The image is still built and labelled at the pipeline commit; only the bump commit lands on the new head. `CommitAndPush`, which other consumers call directly with content they computed themselves, keeps the single commit-and-push without this loop.
 
 `orchestrator-utils` recognises both formats when looking for the build commit (`--grep=^\[skip ci\]` and `--grep=^Bump versão para `, with `--invert-grep`), so `check-images` and `promote` skip bump commits when locating the build branch.
 

@@ -115,7 +115,7 @@ Invariants that span several files:
   - Often `pipeline/types.go` and `orchestrator-utils`.
   - The schema tables in `README.adoc`.
   - The real-project fixtures in `pipeline/config/testdata/` and `orchestrator/testdata/`.
-- **The version bump commit** is pushed with `git push -o ci.skip`. Its message is `Bump versão para <v>`, deliberately without `[skip ci]` (see README "ci.skip").
+- **The version bump commit** is pushed with `git push -o ci.skip`. Its message is `Bump versão para <v>`, deliberately without `[skip ci]` (see README "ci.skip"). `BumpAndCommitVersions` reapplies it on the fetched remote head, writes only when the new CalVer is greater than the file's, and retries from the fetch on non-fast-forward (`orchestrator-utils/bump_retry.go`); `CommitAndPush` has no such loop.
 - **GitLab reporting is optional and fail-soft.** Commit statuses and MR notes run only when every `--gitlab-*` parameter is present. Failures to post notes are logged and swallowed.
 - **Source-scanning guard tests.** For example, `orchestrator-utils/promote_test.go` requires `WithRegistryAuth` on every `From` of a non-literal image.
 
