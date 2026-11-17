@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -569,6 +568,16 @@ func bumpFileVersion(content, version, filename, versionType string) (string, er
 }
 
 // BumpAndCommitVersions faz bump de versão nos arquivos especificados e commita+push.
+//
+// O bump é reaplicado sobre o head remoto da branch, não sobre o checkout da pipeline: busca
+// `git fetch <remote> <branch>`, lê os arquivos de versão desse head e só grava quando a
+// versão nova é maior que a do arquivo (CalVer comparado por partes numéricas; versão do
+// arquivo não interpretável ⇒ grava). Nada a gravar ⇒ sem commit e sem erro. Se o push for
+// recusado porque a branch andou (non-fast-forward), repete desde o fetch, até
+// maxBumpAttempts. Qualquer outra falha de push falha a chamada.
+//
+// CommitAndPush, usado direto por outros consumidores, não ganha esse laço: ele commita o
+// conteúdo que o chamador já calculou sobre o source recebido, sem saber reaplicá-lo.
 // VersionFileTypes deve ficar alinhado a VersionFiles. Um tipo vazio mantém a
 // inferência histórica pelo nome (pom.xml, package.json, pyproject.toml);
 // "plain" substitui o conteúdo inteiro pela versão.
@@ -596,23 +605,8 @@ func (u *OrchestratorUtils) BumpAndCommitVersions(
 		return fmt.Errorf("version file types must match version files: got %d types for %d files", len(versionFileTypes), len(versionFiles))
 	}
 
-	bumpedSource := source
-	for i, vf := range versionFiles {
-		content, err := source.File(vf).Contents(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", vf, err)
-		}
-
-		modified, err := bumpFileVersion(content, version, filepath.Base(vf), versionFileTypes[i])
-		if err != nil {
-			return err
-		}
-
-		bumpedSource = bumpedSource.WithNewFile(vf, modified)
-		fmt.Printf("BumpAndCommitVersions: %s -> %s\n", vf, version)
-	}
-
-	return u.CommitAndPush(ctx, bumpedSource, versionFiles, message, branch, remoteUrl)
+	return runBump(ctx, newDaggerBumpFetcher(source, branch, remoteUrl),
+		versionFiles, versionFileTypes, version, message, maxBumpAttempts)
 }
 
 // GitLabConfig stores the data needed to report commit statuses to GitLab.
