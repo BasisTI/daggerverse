@@ -597,12 +597,12 @@ The bump commit is not made on the pipeline checkout. `BumpAndCommitVersions` (`
 . `git fetch <remote> <branch>` and checkout of `FETCH_HEAD`, with a `CACHE_BUSTER` so Dagger does not reuse an earlier fetch.
 . Each version file is read from that head, not from the pipeline source.
 . Monotonic guard: a file is written only if the pipeline version is greater than the file's (CalVer `YYYY.MM.DD.IID`, compared numerically part by part). A file version that cannot be parsed is overwritten, as before. If no file changes, there is no commit and no error, so two pipelines of the same target finishing out of order leave the greater version in place.
-. Commit `Bump versão para <version>` and `git push -o ci.skip`. If the push is refused because of a race, the flow restarts from the fetch, up to 4 attempts. Any other push failure fails the job. The decision is made on the refusal reason, not on the `[remote rejected]` prefix, which also appears for hooks and permissions:
+. Commit `Bump versão para <version>` and `git push -o ci.skip`. If the push is refused because of a race, the flow restarts from the fetch, up to 4 attempts. Any other push failure fails the job. The decision is made on the reason in parentheses of git's refusal line (`! [rejected] ... (<reason>)` or `! [remote rejected] ... (<reason>)`), not on the `[remote rejected]` prefix, which also appears for hooks and permissions, and not on free text a hook prints on `remote:` lines:
 +
-* Retried: `non-fast-forward`, `fetch first`, `remote contains work` (the branch moved), and `incorrect old value provided`, `failed to update ref`, `cannot lock ref` (another push updated or locked the same ref on the server while ours was in flight, for example two `publish-develop` pipelines finishing together).
-* Not retried: `pre-receive hook declined`, protected branch, authentication and permission failures.
+* Retried: `non-fast-forward` and `fetch first` (the branch moved); `incorrect old value provided`, `reference already exists` (ref lock held by another push in current git), `cannot lock ref ...` and `failed to update ref` (older git) — another push updated or locked the same ref on the server while ours was in flight, for example two `publish-develop` pipelines finishing together.
+* Not retried: `pre-receive hook declined`, protected branch, authentication and permission failures. The plural `failed to update refs`, which current git prints for a permanent failure on the server (permission denied, full disk), is not retried either. Trade-off: the singular `failed to update ref` is the older git's text for the race, so a permission failure on an old server may still be retried, up to 4 times.
 +
-If a version file is missing from the remote head (removed or renamed after the pipeline started), the job fails with a message naming the file.
+If a version file is missing from the remote head (removed or renamed after the pipeline started), the job fails with a message naming the file; any other read error keeps the generic `failed to read` message.
 
 The image is still built and labelled at the pipeline commit; only the bump commit lands on the new head. `CommitAndPush`, which other consumers call directly with content they computed themselves, keeps the single commit-and-push without this loop.
 

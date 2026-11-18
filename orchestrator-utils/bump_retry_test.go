@@ -380,6 +380,16 @@ func TestRunBumpArquivoDeVersaoSumiuNoHeadRemoto(t *testing.T) {
 	}
 }
 
+// erroEnvolvido imita o erro que chega do engine: mensagem própria e o ExecError na cadeia.
+// O ExecError do teste não tem o campo interno, então o Error() dele não pode ser chamado.
+type erroEnvolvido struct {
+	msg   string
+	causa error
+}
+
+func (e erroEnvolvido) Error() string { return e.msg }
+func (e erroEnvolvido) Unwrap() error { return e.causa }
+
 func TestIsPushRejectedPorMotivo(t *testing.T) {
 	casos := []struct {
 		texto string
@@ -389,10 +399,16 @@ func TestIsPushRejectedPorMotivo(t *testing.T) {
 		{"! [rejected] HEAD -> develop (fetch first)", true},
 		{"hint: Updates were rejected because the remote contains work that you do not have locally", true},
 		{"! [remote rejected] HEAD -> develop (incorrect old value provided)", true},
+		{"! [remote rejected] HEAD -> develop (reference already exists)", true},
 		{"! [remote rejected] HEAD -> develop (failed to update ref)", true},
 		{"! [remote rejected] HEAD -> develop (cannot lock ref 'refs/heads/develop': is at abc but expected def)", true},
+		{" ! [remote rejected] HEAD -> develop (incorrect old value provided)\nerror: failed to push some refs", true},
+		// permissão/disco no servidor: o git atual diz "failed to update refs" (plural)
+		{"remote: error: cannot lock ref 'refs/heads/develop': Unable to create 'x.lock': Permission denied\n ! [remote rejected] HEAD -> develop (failed to update refs)", false},
 		{"! [remote rejected] HEAD -> develop (pre-receive hook declined)", false},
 		{"! [remote rejected] HEAD -> develop (protected branch hook declined)", false},
+		// texto livre de hook nas linhas remote: não decide
+		{"remote: GitLab: non-fast-forward merges are required\n ! [remote rejected] HEAD -> develop (pre-receive hook declined)", false},
 		{"remote: GitLab: You are not allowed to push code to protected branches on this project.", false},
 		{"fatal: Authentication failed for 'https://gitlab/x.git'", false},
 		{"remote: HTTP Basic: Access denied", false},
@@ -403,9 +419,50 @@ func TestIsPushRejectedPorMotivo(t *testing.T) {
 			t.Errorf("isPushRejected(%q) = %v, quer %v", c.texto, got, c.quer)
 		}
 		// Caminho real: o texto chega em Stderr de um *dagger.ExecError, não na mensagem.
-		ee := &dagger.ExecError{Stderr: c.texto}
-		if got := isPushRejected(fmt.Errorf("commit-and-push: %w", ee)); got != c.quer {
+		err := erroEnvolvido{msg: "commit-and-push failed", causa: &dagger.ExecError{Stderr: c.texto}}
+		if got := isPushRejected(err); got != c.quer {
 			t.Errorf("ExecError.Stderr %q: got %v, quer %v", c.texto, got, c.quer)
 		}
+	}
+}
+
+func TestRunBumpRefazDepoisDeLockOcupado(t *testing.T) {
+	f := newFixture(t)
+	lock := filepath.Join(f.bare, "refs", "heads", "develop.lock")
+	err := runBump(context.Background(), f.fetcher(func(n int) {
+		switch n {
+		case 1: // outro push segura o lock do ref
+			if err := os.WriteFile(lock, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		case 2:
+			os.Remove(lock)
+		}
+	}), []string{"VERSION"}, []string{"plain"}, "2026.11.17.5", "Bump versão para 2026.11.17.5", maxBumpAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.fetchs != 2 {
+		t.Errorf("fetchs = %d, quer 2", f.fetchs)
+	}
+	if f.remoteVersion() != "2026.11.17.5" {
+		t.Errorf("versão = %s", f.remoteVersion())
+	}
+}
+
+type leituraFalha struct{ err error }
+
+func (l leituraFalha) Read(context.Context, string) (string, error) { return "", l.err }
+func (leituraFalha) CommitAndPush(context.Context, []fileChange, string) error {
+	return nil
+}
+
+func TestRunBumpErroDeLeituraQueNaoEAusencia(t *testing.T) {
+	fetch := func(context.Context) (bumpAttempt, error) {
+		return leituraFalha{errors.New("context canceled")}, nil
+	}
+	err := runBump(context.Background(), fetch, []string{"VERSION"}, []string{"plain"}, "2026.11.17.5", "m", maxBumpAttempts)
+	if err == nil || strings.Contains(err.Error(), "não encontrado") || !strings.Contains(err.Error(), "failed to read VERSION") {
+		t.Fatalf("erro = %v", err)
 	}
 }
