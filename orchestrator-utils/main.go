@@ -329,7 +329,7 @@ func (u *OrchestratorUtils) CommitAndPush(
 	}
 
 	git = git.WithExec([]string{"git", "commit", "-m", message})
-	git = git.WithExec([]string{"git", "push", "-o", "ci.skip", remoteUrl, "HEAD:" + branch})
+	git = git.WithExec(bumpPushArgs(remoteUrl, branch))
 
 	_, err := git.Sync(ctx)
 	if err != nil {
@@ -573,7 +573,7 @@ func bumpFileVersion(content, version, filename, versionType string) (string, er
 // `git fetch <remote> <branch>`, lê os arquivos de versão desse head e só grava quando a
 // versão nova é maior que a do arquivo (CalVer comparado por partes numéricas; versão do
 // arquivo não interpretável ⇒ grava). Nada a gravar ⇒ sem commit e sem erro. Se o push for
-// recusado porque a branch andou (non-fast-forward), repete desde o fetch, até
+// recusado por corrida (a branch andou ou o ref foi travado), repete desde o fetch, até
 // maxBumpAttempts. Qualquer outra falha de push falha a chamada.
 //
 // CommitAndPush, usado direto por outros consumidores, não ganha esse laço: ele commita o

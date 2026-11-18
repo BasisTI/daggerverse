@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,8 +15,8 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-// maxBumpAttempts é o limite de tentativas do bump quando o push é recusado porque a branch
-// andou (non-fast-forward). Pequeno de propósito: cada rodada refaz o fetch e uma branch que
+// maxBumpAttempts é o limite de tentativas do bump quando o push é recusado por corrida (a branch
+// andou ou o ref foi travado por outro push). Pequeno de propósito: cada rodada refaz o fetch e uma branch que
 // anda mais de 4 vezes em segundos indica outro problema, que deve falhar o job.
 const maxBumpAttempts = 4
 
@@ -137,7 +139,7 @@ type bumpAttempt interface {
 type bumpFetcher func(ctx context.Context) (bumpAttempt, error)
 
 // runBump reaplica o bump sobre o head remoto, repetindo desde o fetch quando o push é
-// recusado por non-fast-forward. Outras falhas de push falham de imediato.
+// recusado por corrida (ver motivoRepetivel). Outras falhas de push falham de imediato.
 func runBump(ctx context.Context, fetch bumpFetcher, versionFiles, versionFileTypes []string,
 	version, message string, attempts int) error {
 	var lastErr error
@@ -151,6 +153,9 @@ func runBump(ctx context.Context, fetch bumpFetcher, versionFiles, versionFileTy
 		for i, vf := range versionFiles {
 			content, err := at.Read(ctx, vf)
 			if err != nil {
+				if arquivoAusente(err) {
+					return fmt.Errorf("arquivo de versão %s não encontrado no head remoto (removido ou renomeado depois do início da pipeline?): %w", vf, err)
+				}
 				return fmt.Errorf("failed to read %s: %w", vf, err)
 			}
 			modified, write, err := planFileBump(content, version, baseName(vf), versionFileTypes[i])
@@ -177,7 +182,7 @@ func runBump(ctx context.Context, fetch bumpFetcher, versionFiles, versionFileTy
 			return fmt.Errorf("commit-and-push failed: %w", err)
 		}
 		lastErr = err
-		fmt.Printf("BumpAndCommitVersions: push recusado, a branch avançou (tentativa %d/%d); refazendo a partir do fetch\n", n, attempts)
+		fmt.Printf("BumpAndCommitVersions: push recusado por corrida (tentativa %d/%d); refazendo a partir do fetch\n", n, attempts)
 	}
 	return fmt.Errorf("commit-and-push failed: push recusado após %d tentativas: %w", attempts, lastErr)
 }
@@ -189,17 +194,64 @@ func baseName(p string) string {
 	return p
 }
 
-// isPushRejected reconhece a recusa de push porque o remoto avançou. Recusas de hook ou de
-// permissão (branch protegida) usam outro texto ("remote rejected") e não repetem.
-func isPushRejected(err error) bool {
-	text := err.Error()
+// motivoRecusaPush captura o motivo entre parênteses de uma linha de recusa do git:
+//
+//	! [rejected]        HEAD -> develop (non-fast-forward)
+//	! [remote rejected] HEAD -> develop (incorrect old value provided)
+//
+// A decisão é pelo motivo, não pelo prefixo "[remote rejected]", que também aparece na recusa por
+// hook, branch protegida e permissão. Linhas "remote:" (texto livre de hook) são ignoradas.
+var motivoRecusaPush = regexp.MustCompile(`(?m)^\s*!\s+\[(?:remote rejected|rejected)\]\s+\S+\s+->\s+\S+\s+\((.+)\)\s*$`)
+
+// motivoRepetivel informa se o motivo de uma recusa é corrida (a branch andou ou o ref está
+// travado por outro push):
+//   - non-fast-forward, fetch first: recusa no cliente, a branch avançou.
+//   - incorrect old value provided: receive-pack, o ref mudou entre a leitura e a atualização.
+//   - reference already exists: git 2.x, lock do ref ocupado por outro push.
+//   - cannot lock ref ...: git antigo, lock do ref ocupado.
+//   - failed to update ref (singular): git antigo, atualização do ref perdida. O plural
+//     "failed to update refs" é o que o git atual diz para falha permanente (permissão negada,
+//     disco cheio) e não repete.
+func motivoRepetivel(motivo string) bool {
+	motivo = strings.TrimSpace(motivo)
+	switch motivo {
+	case "non-fast-forward", "fetch first", "incorrect old value provided",
+		"reference already exists", "failed to update ref":
+		return true
+	}
+	return strings.HasPrefix(motivo, "cannot lock ref")
+}
+
+// stderrDoExec devolve o Stderr de um *dagger.ExecError na cadeia do erro, sem chamar Error() dele.
+func stderrDoExec(err error) string {
 	var ee *dagger.ExecError
 	if errors.As(err, &ee) {
-		text += "\n" + ee.Stderr
+		return ee.Stderr
 	}
-	return strings.Contains(text, "non-fast-forward") ||
-		strings.Contains(text, "fetch first") ||
-		strings.Contains(text, "remote contains work")
+	return ""
+}
+
+// isPushRejected reconhece a recusa de push por corrida. Recusa por hook (pre-receive hook
+// declined), branch protegida, credencial e permissão não casam e falham de imediato.
+func isPushRejected(err error) bool {
+	text := err.Error() + "\n" + stderrDoExec(err)
+	for _, m := range motivoRecusaPush.FindAllStringSubmatch(text, -1) {
+		if motivoRepetivel(m[1]) {
+			return true
+		}
+	}
+	// Dica do cliente quando o remoto tem trabalho que não temos localmente.
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "hint:") && strings.Contains(l, "remote contains work") {
+			return true
+		}
+	}
+	return false
+}
+
+// arquivoAusente informa se o erro de leitura é de arquivo inexistente (local ou do engine).
+func arquivoAusente(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), "no such file or directory")
 }
 
 // daggerBumpAttempt implementa bumpAttempt sobre um container git com o head remoto em /src.
