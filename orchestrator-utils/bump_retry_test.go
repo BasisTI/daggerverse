@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"dagger/orchestrator-utils/internal/dagger"
 	"errors"
 	"fmt"
 	"os"
@@ -309,5 +310,102 @@ func TestBumpPushUsaCiSkip(t *testing.T) {
 	got := strings.Join(bumpPushArgs("url", "develop"), " ")
 	if got != "git push -o ci.skip url HEAD:develop" {
 		t.Errorf("push = %s", got)
+	}
+}
+
+// instalaHookCorrida instala no remoto bare um pre-receive que, só no primeiro push, avança o
+// ref da develop (commit novo sobre o head atual) antes de o receive-pack atualizá-lo. É a
+// corrida de servidor: o git recusa com "incorrect old value provided".
+func (f *repoFixture) instalaHookCorrida() {
+	f.t.Helper()
+	script := `#!/bin/sh
+marca="$GIT_DIR/corrida-feita"
+[ -e "$marca" ] && exit 0
+: > "$marca"
+unset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+head=$(git rev-parse refs/heads/develop)
+novo=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  git commit-tree -p "$head" -m "outro push" "$head^{tree}")
+git update-ref refs/heads/develop "$novo"
+exit 0
+`
+	hook := filepath.Join(f.bare, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func TestRunBumpRefazDepoisDeCorridaNoServidor(t *testing.T) {
+	f := newFixture(t)
+	f.instalaHookCorrida()
+	err := runBump(context.Background(), f.fetcher(nil), []string{"VERSION"}, []string{"plain"},
+		"2026.11.17.5", "Bump versão para 2026.11.17.5", maxBumpAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.fetchs != 2 {
+		t.Errorf("fetchs = %d, quer 2 (a primeira tentativa perde a corrida)", f.fetchs)
+	}
+	log := f.remoteLog()
+	if !strings.Contains(log, "outro push") || !strings.HasPrefix(log, "Bump versão para 2026.11.17.5\n") {
+		t.Errorf("o bump deveria estar sobre o commit do outro push:\n%s", log)
+	}
+	if f.remoteVersion() != "2026.11.17.5" {
+		t.Errorf("versão = %s", f.remoteVersion())
+	}
+}
+
+func TestRunBumpHookQueRecusaNaoRepete(t *testing.T) {
+	f := newFixture(t)
+	hook := filepath.Join(f.bare, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'recusado pela politica' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := runBump(context.Background(), f.fetcher(nil), []string{"VERSION"}, []string{"plain"},
+		"2026.11.17.5", "Bump versão para 2026.11.17.5", maxBumpAttempts)
+	if err == nil || !strings.Contains(err.Error(), "pre-receive hook declined") {
+		t.Fatalf("erro = %v", err)
+	}
+	if f.fetchs != 1 {
+		t.Errorf("fetchs = %d, quer 1: recusa por hook não repete", f.fetchs)
+	}
+}
+
+func TestRunBumpArquivoDeVersaoSumiuNoHeadRemoto(t *testing.T) {
+	f := newFixture(t)
+	err := runBump(context.Background(), f.fetcher(nil), []string{"NAO-EXISTE"}, []string{"plain"},
+		"2026.11.17.5", "m", maxBumpAttempts)
+	if err == nil || !strings.Contains(err.Error(), "arquivo de versão NAO-EXISTE não encontrado no head remoto") {
+		t.Fatalf("erro = %v", err)
+	}
+}
+
+func TestIsPushRejectedPorMotivo(t *testing.T) {
+	casos := []struct {
+		texto string
+		quer  bool
+	}{
+		{"! [rejected] HEAD -> develop (non-fast-forward)", true},
+		{"! [rejected] HEAD -> develop (fetch first)", true},
+		{"hint: Updates were rejected because the remote contains work that you do not have locally", true},
+		{"! [remote rejected] HEAD -> develop (incorrect old value provided)", true},
+		{"! [remote rejected] HEAD -> develop (failed to update ref)", true},
+		{"! [remote rejected] HEAD -> develop (cannot lock ref 'refs/heads/develop': is at abc but expected def)", true},
+		{"! [remote rejected] HEAD -> develop (pre-receive hook declined)", false},
+		{"! [remote rejected] HEAD -> develop (protected branch hook declined)", false},
+		{"remote: GitLab: You are not allowed to push code to protected branches on this project.", false},
+		{"fatal: Authentication failed for 'https://gitlab/x.git'", false},
+		{"remote: HTTP Basic: Access denied", false},
+		{"fatal: unable to access: The requested URL returned error: 403", false},
+	}
+	for _, c := range casos {
+		if got := isPushRejected(errors.New(c.texto)); got != c.quer {
+			t.Errorf("isPushRejected(%q) = %v, quer %v", c.texto, got, c.quer)
+		}
+		// Caminho real: o texto chega em Stderr de um *dagger.ExecError, não na mensagem.
+		ee := &dagger.ExecError{Stderr: c.texto}
+		if got := isPushRejected(fmt.Errorf("commit-and-push: %w", ee)); got != c.quer {
+			t.Errorf("ExecError.Stderr %q: got %v, quer %v", c.texto, got, c.quer)
+		}
 	}
 }

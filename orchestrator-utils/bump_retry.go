@@ -13,8 +13,8 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-// maxBumpAttempts é o limite de tentativas do bump quando o push é recusado porque a branch
-// andou (non-fast-forward). Pequeno de propósito: cada rodada refaz o fetch e uma branch que
+// maxBumpAttempts é o limite de tentativas do bump quando o push é recusado por corrida (a branch
+// andou ou o ref foi travado por outro push). Pequeno de propósito: cada rodada refaz o fetch e uma branch que
 // anda mais de 4 vezes em segundos indica outro problema, que deve falhar o job.
 const maxBumpAttempts = 4
 
@@ -137,7 +137,7 @@ type bumpAttempt interface {
 type bumpFetcher func(ctx context.Context) (bumpAttempt, error)
 
 // runBump reaplica o bump sobre o head remoto, repetindo desde o fetch quando o push é
-// recusado por non-fast-forward. Outras falhas de push falham de imediato.
+// recusado por corrida (ver motivosPushRepetivel). Outras falhas de push falham de imediato.
 func runBump(ctx context.Context, fetch bumpFetcher, versionFiles, versionFileTypes []string,
 	version, message string, attempts int) error {
 	var lastErr error
@@ -151,7 +151,7 @@ func runBump(ctx context.Context, fetch bumpFetcher, versionFiles, versionFileTy
 		for i, vf := range versionFiles {
 			content, err := at.Read(ctx, vf)
 			if err != nil {
-				return fmt.Errorf("failed to read %s: %w", vf, err)
+				return fmt.Errorf("arquivo de versão %s não encontrado no head remoto (removido ou renomeado depois do início da pipeline?): %w", vf, err)
 			}
 			modified, write, err := planFileBump(content, version, baseName(vf), versionFileTypes[i])
 			if err != nil {
@@ -177,7 +177,7 @@ func runBump(ctx context.Context, fetch bumpFetcher, versionFiles, versionFileTy
 			return fmt.Errorf("commit-and-push failed: %w", err)
 		}
 		lastErr = err
-		fmt.Printf("BumpAndCommitVersions: push recusado, a branch avançou (tentativa %d/%d); refazendo a partir do fetch\n", n, attempts)
+		fmt.Printf("BumpAndCommitVersions: push recusado por corrida (tentativa %d/%d); refazendo a partir do fetch\n", n, attempts)
 	}
 	return fmt.Errorf("commit-and-push failed: push recusado após %d tentativas: %w", attempts, lastErr)
 }
@@ -189,17 +189,37 @@ func baseName(p string) string {
 	return p
 }
 
-// isPushRejected reconhece a recusa de push porque o remoto avançou. Recusas de hook ou de
-// permissão (branch protegida) usam outro texto ("remote rejected") e não repetem.
+// motivosPushRepetivel são os textos de recusa de push causados por corrida: o remoto andou
+// (cliente) ou outro push travou/atualizou o mesmo ref durante o nosso (servidor). A decisão é
+// pelo motivo, não pelo prefixo: "[remote rejected]" aparece também na recusa por hook, branch
+// protegida e permissão, que não repetem.
+//   - non-fast-forward, fetch first, remote contains work: recusa no cliente, a branch avançou.
+//   - incorrect old value provided: receive-pack, o ref mudou entre a leitura e a atualização.
+//   - failed to update ref, cannot lock ref: git antigo e Gitaly, lock/atualização do ref perdida.
+var motivosPushRepetivel = []string{
+	"non-fast-forward",
+	"fetch first",
+	"remote contains work",
+	"incorrect old value provided",
+	"failed to update ref",
+	"cannot lock ref",
+}
+
+// isPushRejected reconhece a recusa de push por corrida (a branch andou ou o ref foi travado por
+// outro push). Recusa por hook (pre-receive hook declined), branch protegida, credencial e
+// permissão não casam e falham de imediato.
 func isPushRejected(err error) bool {
 	text := err.Error()
 	var ee *dagger.ExecError
 	if errors.As(err, &ee) {
 		text += "\n" + ee.Stderr
 	}
-	return strings.Contains(text, "non-fast-forward") ||
-		strings.Contains(text, "fetch first") ||
-		strings.Contains(text, "remote contains work")
+	for _, m := range motivosPushRepetivel {
+		if strings.Contains(text, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // daggerBumpAttempt implementa bumpAttempt sobre um container git com o head remoto em /src.
